@@ -38,6 +38,7 @@ function makeHandlers(): MenuEventHandlers {
     onToggleRawEditor: vi.fn(),
     onToggleDiff: vi.fn(),
     onToggleAIChat: vi.fn(),
+    onPastePlainText: vi.fn(),
     onGoBack: vi.fn(),
     onGoForward: vi.fn(),
     onCheckForUpdates: vi.fn(),
@@ -52,6 +53,7 @@ function makeHandlers(): MenuEventHandlers {
     onViewChanges: vi.fn(),
     onInstallMcp: vi.fn(),
     onReloadVault: vi.fn(),
+    onRepairVault: vi.fn(),
     onOpenInNewWindow: vi.fn(),
     onRestoreDeletedNote: vi.fn(),
     activeTabPathRef: { current: '/vault/test.md' } as React.MutableRefObject<string | null>,
@@ -88,6 +90,22 @@ describe('useMenuEvents', () => {
     resolveListen?.(teardown)
     await vi.dynamicImportSettled()
 
+    expect(teardown).toHaveBeenCalledTimes(1)
+  })
+
+  it('swallows stale native menu unlisten failures from dev-mode remounts', async () => {
+    isTauriMock.mockReturnValue(true)
+    const teardown = vi.fn(() => {
+      throw new TypeError("undefined is not an object (evaluating 'listeners[eventId].handlerId')")
+    })
+
+    listenMock.mockResolvedValueOnce(teardown)
+
+    const { unmount } = renderHook(() => useMenuEvents(makeHandlers()))
+    await vi.dynamicImportSettled()
+
+    expect(() => unmount()).not.toThrow()
+    await vi.dynamicImportSettled()
     expect(teardown).toHaveBeenCalledTimes(1)
   })
 })
@@ -293,6 +311,12 @@ describe('dispatchMenuEvent', () => {
     expect(h.onToggleDiff).toHaveBeenCalled()
   })
 
+  it('edit-paste-plain-text triggers plain-text paste', () => {
+    const h = makeHandlers()
+    dispatchMenuEvent('edit-paste-plain-text', h)
+    expect(h.onPastePlainText).toHaveBeenCalled()
+  })
+
   it('view-toggle-ai-chat triggers toggle AI chat', () => {
     const h = makeHandlers()
     dispatchMenuEvent('view-toggle-ai-chat', h)
@@ -328,6 +352,12 @@ describe('dispatchMenuEvent', () => {
     const h = makeHandlers()
     dispatchMenuEvent('go-changes', h)
     expect(h.onSelectFilter).toHaveBeenCalledWith('changes')
+  })
+
+  it('go-inbox selects inbox filter', () => {
+    const h = makeHandlers()
+    dispatchMenuEvent('go-inbox', h)
+    expect(h.onSelectFilter).toHaveBeenCalledWith('inbox')
   })
 
   // Vault menu events
@@ -383,6 +413,12 @@ describe('dispatchMenuEvent', () => {
     const h = makeHandlers()
     dispatchMenuEvent('vault-reload', h)
     expect(h.onReloadVault).toHaveBeenCalled()
+  })
+
+  it('vault-repair triggers repair vault', () => {
+    const h = makeHandlers()
+    dispatchMenuEvent('vault-repair', h)
+    expect(h.onRepairVault).toHaveBeenCalled()
   })
 
   // Note: open in new window

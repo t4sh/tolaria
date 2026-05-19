@@ -146,25 +146,33 @@ describe('mockHandlers coverage', () => {
         autogit_enabled: true,
         autogit_idle_threshold_seconds: undefined,
         autogit_inactive_threshold_seconds: undefined,
+        auto_advance_inbox_after_organize: true,
         telemetry_consent: true,
         crash_reporting_enabled: false,
         analytics_enabled: true,
         anonymous_id: 'anon-1',
         release_channel: 'alpha',
+        ui_language: 'zh-CN',
         default_ai_agent: 'codex',
       },
     })
 
     expect(mockHandlers.get_settings()).toEqual({
       auto_pull_interval_minutes: 5,
+      git_enabled: null,
       autogit_enabled: true,
       autogit_idle_threshold_seconds: 90,
       autogit_inactive_threshold_seconds: 30,
+      auto_advance_inbox_after_organize: true,
       telemetry_consent: true,
       crash_reporting_enabled: false,
       analytics_enabled: true,
       anonymous_id: 'anon-1',
       release_channel: 'alpha',
+      theme_mode: null,
+      note_width_mode: null,
+      sidebar_type_pluralization_enabled: null,
+      ui_language: 'zh-CN',
       default_ai_agent: 'codex',
     })
 

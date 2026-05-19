@@ -1,12 +1,18 @@
 import type { VaultConfig } from '../types'
+import {
+  DEFAULT_AI_AGENT_PERMISSION_MODE,
+  normalizeAiAgentPermissionMode,
+} from '../lib/aiAgentPermissionMode'
 
 type SaveFn = (config: VaultConfig) => void
 type Listener = () => void
 
 const DEFAULT_CONFIG: VaultConfig = {
-  zoom: null, view_mode: null, editor_mode: null,
+  zoom: null, view_mode: null, editor_mode: null, note_layout: null,
+  git_setup_preference: 'prompt',
+  ai_agent_permission_mode: DEFAULT_AI_AGENT_PERMISSION_MODE,
   tag_colors: null, status_colors: null, property_display_modes: null,
-  inbox: null,
+  inbox: null, allNotes: null,
 }
 
 let config: VaultConfig = DEFAULT_CONFIG
@@ -18,7 +24,7 @@ export function getVaultConfig(): VaultConfig {
 }
 
 export function bindVaultConfigStore(initial: VaultConfig, save: SaveFn): void {
-  config = initial
+  config = normalizeVaultConfig(initial)
   saveFn = save
   notify()
 }
@@ -29,7 +35,7 @@ export function resetVaultConfigStore(): void {
 }
 
 export function updateVaultConfigField<K extends keyof VaultConfig>(key: K, value: VaultConfig[K]): void {
-  config = { ...config, [key]: value }
+  config = normalizeVaultConfig({ ...config, [key]: value })
   saveFn?.(config)
   notify()
 }
@@ -41,4 +47,13 @@ export function subscribeVaultConfig(listener: Listener): () => void {
 
 function notify(): void {
   for (const fn of listeners) fn()
+}
+
+function normalizeVaultConfig(next: VaultConfig): VaultConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    ...next,
+    git_setup_preference: next.git_setup_preference === 'never' ? 'never' : 'prompt',
+    ai_agent_permission_mode: normalizeAiAgentPermissionMode(next.ai_agent_permission_mode),
+  }
 }

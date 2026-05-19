@@ -1,7 +1,16 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
+import { useState, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { getTagStyle, setTagColor, getTagColorKey } from '../utils/tagStyles'
-import { ACCENT_COLORS } from '../utils/typeColors'
+import {
+  getNextHighlightIndex,
+  getPreviousHighlightIndex,
+  isCreateOptionVisible,
+  useAnchoredDropdownPosition,
+  useAutoFocus,
+} from './propertyDropdownUtils'
+import { AccentColorPicker } from './AccentColorPicker'
+
+const PROPERTY_DROPDOWN_WIDTH = 208
 
 export function TagPill({ tag, className }: { tag: string; className?: string }) {
   const style = getTagStyle(tag)
@@ -30,20 +39,15 @@ function ColorPickerRow({ tag, onColorChange }: { tag: string; onColorChange: (t
   const currentKey = getTagColorKey(tag)
   return (
     <div className="flex items-center gap-1 px-3 py-1.5" data-testid={`tag-color-picker-${tag}`}>
-      {ACCENT_COLORS.map(c => (
-        <button
-          key={c.key}
-          className="flex size-4 shrink-0 items-center justify-center rounded-full border-none p-0 transition-transform hover:scale-125"
-          style={{ backgroundColor: c.css }}
-          onClick={(e) => { e.stopPropagation(); onColorChange(tag, c.key) }}
-          title={c.label}
-          data-testid={`tag-color-option-${c.key}`}
-        >
-          {currentKey === c.key && (
-            <span style={{ color: 'white', fontSize: 8, lineHeight: 1 }}>{'\u2713'}</span>
-          )}
-        </button>
-      ))}
+      <AccentColorPicker
+        className="gap-1"
+        getOptionTestId={(key) => `tag-color-option-${key}`}
+        indicator="check"
+        selectedColor={currentKey}
+        onSelectColor={(colorKey) => onColorChange(tag, colorKey)}
+        size={16}
+        stopPropagation
+      />
     </div>
   )
 }
@@ -111,6 +115,28 @@ function useTagFiltering(query: string, vaultTags: string[]) {
   }, [query, vaultTags])
 }
 
+interface TagSelectionOptions {
+  highlightIndex: number
+  filtered: string[]
+  showCreateOption: boolean
+  query: string
+  selectedTags: Set<string>
+}
+
+function getTagValueToToggle({
+  highlightIndex,
+  filtered,
+  showCreateOption,
+  query,
+  selectedTags,
+}: TagSelectionOptions) {
+  const trimmed = query.trim()
+  if (highlightIndex >= 0 && highlightIndex < filtered.length) return filtered.at(highlightIndex)
+  if (showCreateOption && highlightIndex === filtered.length && trimmed) return trimmed
+  if (trimmed && !selectedTags.has(trimmed)) return trimmed
+  return null
+}
+
 function useTagKeyboard(opts: {
   filtered: string[]; totalOptions: number; showCreateOption: boolean
   query: string; selectedTags: Set<string>
@@ -124,36 +150,35 @@ function useTagKeyboard(opts: {
     const list = listRef.current
     if (!list) return
     const items = list.querySelectorAll('[data-testid^="tag-option-"], [data-testid="tag-create-option"]')
-    items[index]?.scrollIntoView({ block: 'nearest' })
+    items.item(index)?.scrollIntoView({ block: 'nearest' })
   }, [listRef])
+
+  const moveHighlight = useCallback((nextIndex: number) => {
+    setHighlightIndex(nextIndex)
+    scrollIntoView(nextIndex)
+  }, [scrollIntoView])
+
+  const submitHighlightedTag = useCallback(() => {
+    const value = getTagValueToToggle({ highlightIndex, filtered, showCreateOption, query, selectedTags })
+    if (value) onToggle(value)
+  }, [highlightIndex, filtered, showCreateOption, query, selectedTags, onToggle])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       switch (e.key) {
         case 'ArrowDown': {
           e.preventDefault()
-          const next = highlightIndex < totalOptions - 1 ? highlightIndex + 1 : 0
-          setHighlightIndex(next)
-          scrollIntoView(next)
+          moveHighlight(getNextHighlightIndex(highlightIndex, totalOptions))
           break
         }
         case 'ArrowUp': {
           e.preventDefault()
-          const prev = highlightIndex > 0 ? highlightIndex - 1 : totalOptions - 1
-          setHighlightIndex(prev)
-          scrollIntoView(prev)
+          moveHighlight(getPreviousHighlightIndex(highlightIndex, totalOptions))
           break
         }
         case 'Enter': {
           e.preventDefault()
-          const trimmed = query.trim()
-          if (highlightIndex >= 0 && highlightIndex < filtered.length) {
-            onToggle(filtered[highlightIndex])
-          } else if (showCreateOption && highlightIndex === filtered.length && trimmed) {
-            onToggle(trimmed)
-          } else if (trimmed && !selectedTags.has(trimmed)) {
-            onToggle(trimmed)
-          }
+          submitHighlightedTag()
           break
         }
         case 'Escape':
@@ -162,7 +187,7 @@ function useTagKeyboard(opts: {
           break
       }
     },
-    [highlightIndex, totalOptions, filtered, showCreateOption, query, selectedTags, onToggle, onClose, scrollIntoView],
+    [highlightIndex, totalOptions, moveHighlight, submitHighlightedTag, onClose],
   )
 
   const resetHighlight = useCallback(() => setHighlightIndex(-1), [])
@@ -180,33 +205,17 @@ export function TagsDropdown({
   const [colorEditingTag, setColorEditingTag] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const anchorRef = useRef<HTMLDivElement>(null)
+  const anchorRef = useRef<HTMLSpanElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   const selectedSet = useMemo(() => new Set(selectedTags), [selectedTags])
 
-  useLayoutEffect(() => {
-    const node = dropdownRef.current
-    if (!node) return
-    const anchor = anchorRef.current?.parentElement
-    if (!anchor) return
-    const rect = anchor.getBoundingClientRect()
-    const dropW = 208
-    let left = rect.right - dropW
-    if (left < 8) left = 8
-    if (left + dropW > window.innerWidth - 8) left = window.innerWidth - dropW - 8
-    node.style.top = `${rect.bottom + 4}px`
-    node.style.left = `${left}px`
-  }, [])
-
-  useEffect(() => { inputRef.current?.focus() }, [])
+  useAnchoredDropdownPosition({ anchorRef, dropdownRef, width: PROPERTY_DROPDOWN_WIDTH })
+  useAutoFocus(inputRef)
 
   const { filtered } = useTagFiltering(query, vaultTags)
 
-  const showCreateOption = useMemo(() => {
-    if (!query.trim()) return false
-    return !filtered.some(t => t.toLowerCase() === query.trim().toLowerCase())
-  }, [query, filtered])
+  const showCreateOption = useMemo(() => isCreateOptionVisible(query, filtered), [query, filtered])
 
   const totalOptions = filtered.length + (showCreateOption ? 1 : 0)
 
@@ -250,51 +259,107 @@ export function TagsDropdown({
               />
             </div>
             <div ref={listRef} className="max-h-52 overflow-y-auto py-1">
-              {filtered.length > 0 && (
-                <div>
-                  <SectionLabel>From vault</SectionLabel>
-                  {filtered.map((tag, i) => (
-                    <TagOption
-                      key={tag} tag={tag}
-                      selected={selectedSet.has(tag)}
-                      highlighted={highlightIndex === i}
-                      onToggle={onToggle}
-                      onMouseEnter={() => setHighlightIndex(i)}
-                      colorEditing={colorEditingTag === tag}
-                      onToggleColor={handleToggleColor}
-                      onColorChange={handleColorChange}
-                    />
-                  ))}
-                </div>
-              )}
-              {showCreateOption && (
-                <>
-                  {filtered.length > 0 && <div className="my-1 h-px bg-border" />}
-                  <button
-                    className="flex w-full items-center gap-1.5 border-none bg-transparent px-2 py-1 text-left text-[11px] transition-colors"
-                    style={{
-                      borderRadius: 4,
-                      backgroundColor: highlightIndex === filtered.length ? 'var(--muted)' : 'transparent',
-                      color: 'var(--muted-foreground)',
-                    }}
-                    onClick={() => onToggle(query.trim())}
-                    onMouseEnter={() => setHighlightIndex(filtered.length)}
-                    data-testid="tag-create-option"
-                  >
-                    Create <TagPill tag={query.trim()} />
-                  </button>
-                </>
-              )}
-              {filtered.length === 0 && !showCreateOption && (
-                <div className="px-2 py-2 text-center text-[11px] text-muted-foreground">
-                  No matching tags
-                </div>
-              )}
+              <VaultTagSection
+                tags={filtered}
+                selectedTags={selectedSet}
+                highlightIndex={highlightIndex}
+                colorEditingTag={colorEditingTag}
+                onToggle={onToggle}
+                onHighlight={setHighlightIndex}
+                onToggleColor={handleToggleColor}
+                onColorChange={handleColorChange}
+              />
+              <CreateTagSection
+                show={showCreateOption}
+                query={query}
+                showDivider={filtered.length > 0}
+                highlighted={highlightIndex === filtered.length}
+                onToggle={onToggle}
+                onMouseEnter={() => setHighlightIndex(filtered.length)}
+              />
+              <EmptyTagMessage show={filtered.length === 0 && !showCreateOption} />
             </div>
           </div>
         </>,
         document.body,
       )}
     </span>
+  )
+}
+
+interface VaultTagSectionProps {
+  tags: string[]
+  selectedTags: Set<string>
+  highlightIndex: number
+  colorEditingTag: string | null
+  onToggle: (tag: string) => void
+  onHighlight: (index: number) => void
+  onToggleColor: (tag: string) => void
+  onColorChange: (tag: string, colorKey: string) => void
+}
+
+function VaultTagSection({
+  tags,
+  selectedTags,
+  highlightIndex,
+  colorEditingTag,
+  onToggle,
+  onHighlight,
+  onToggleColor,
+  onColorChange,
+}: VaultTagSectionProps) {
+  if (tags.length === 0) return null
+  return (
+    <div>
+      <SectionLabel>From vault</SectionLabel>
+      {tags.map((tag, i) => (
+        <TagOption
+          key={tag}
+          tag={tag}
+          selected={selectedTags.has(tag)}
+          highlighted={highlightIndex === i}
+          onToggle={onToggle}
+          onMouseEnter={() => onHighlight(i)}
+          colorEditing={colorEditingTag === tag}
+          onToggleColor={onToggleColor}
+          onColorChange={onColorChange}
+        />
+      ))}
+    </div>
+  )
+}
+
+function CreateTagSection({ show, query, showDivider, highlighted, onToggle, onMouseEnter }: {
+  show: boolean; query: string; showDivider: boolean; highlighted: boolean
+  onToggle: (tag: string) => void; onMouseEnter: () => void
+}) {
+  if (!show) return null
+  const trimmed = query.trim()
+  return (
+    <>
+      {showDivider && <div className="my-1 h-px bg-border" />}
+      <button
+        className="flex w-full items-center gap-1.5 border-none bg-transparent px-2 py-1 text-left text-[11px] transition-colors"
+        style={{
+          borderRadius: 4,
+          backgroundColor: highlighted ? 'var(--muted)' : 'transparent',
+          color: 'var(--muted-foreground)',
+        }}
+        onClick={() => onToggle(trimmed)}
+        onMouseEnter={onMouseEnter}
+        data-testid="tag-create-option"
+      >
+        Create <TagPill tag={trimmed} />
+      </button>
+    </>
+  )
+}
+
+function EmptyTagMessage({ show }: { show: boolean }) {
+  if (!show) return null
+  return (
+    <div className="px-2 py-2 text-center text-[11px] text-muted-foreground">
+      No matching tags
+    </div>
   )
 }

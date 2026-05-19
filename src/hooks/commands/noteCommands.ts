@@ -1,13 +1,19 @@
+import { APP_COMMAND_IDS, getAppCommandShortcutDisplay } from '../appCommandCatalog'
+import { buildEditorFindCommands } from './editorFindCommands'
 import type { CommandAction } from './types'
 
 interface NoteCommandsConfig {
   hasActiveNote: boolean
   activeTabPath: string | null
+  activeFileKind?: 'markdown' | 'text' | 'binary'
   isArchived: boolean
   activeNoteHasIcon?: boolean
   onCreateNote: () => void
   onCreateType?: () => void
   onSave: () => void
+  onFindInNote?: () => void
+  onReplaceInNote?: () => void
+  onPastePlainText: () => void
   onDeleteNote: (path: string) => void
   onArchiveNote: (path: string) => void
   onUnarchiveNote: (path: string) => void
@@ -17,6 +23,9 @@ interface NoteCommandsConfig {
   onSetNoteIcon?: () => void
   onRemoveNoteIcon?: () => void
   onOpenInNewWindow?: () => void
+  onRevealActiveFile?: (path: string) => void
+  onCopyActiveFilePath?: (path: string) => void
+  onOpenActiveFileExternal?: (path: string) => void
   onToggleFavorite?: (path: string) => void
   isFavorite?: boolean
   onToggleOrganized?: (path: string) => void
@@ -59,7 +68,7 @@ function buildCoreNoteCommands(config: NoteCommandsConfig): CommandAction[] {
     createNoteCommand({
       id: 'create-note',
       label: 'New Note',
-      shortcut: '⌘N',
+      shortcut: getAppCommandShortcutDisplay(APP_COMMAND_IDS.fileNewNote),
       keywords: ['new', 'create', 'add'],
       enabled: true,
       execute: config.onCreateNote,
@@ -74,11 +83,20 @@ function buildCoreNoteCommands(config: NoteCommandsConfig): CommandAction[] {
     createNoteCommand({
       id: 'save-note',
       label: 'Save Note',
-      shortcut: '⌘S',
+      shortcut: getAppCommandShortcutDisplay(APP_COMMAND_IDS.fileSave),
       keywords: ['write'],
       enabled: config.hasActiveNote,
       execute: config.onSave,
     }),
+    createNoteCommand({
+      id: 'paste-plain-text',
+      label: 'Paste without formatting',
+      shortcut: getAppCommandShortcutDisplay(APP_COMMAND_IDS.editPastePlainText),
+      keywords: ['paste', 'plain', 'formatting', 'clipboard', 'match style'],
+      enabled: true,
+      execute: config.onPastePlainText,
+    }),
+    ...buildEditorFindCommands(config),
   ]
 }
 
@@ -94,7 +112,7 @@ function buildDestructiveNoteCommands(config: NoteCommandsConfig): CommandAction
     createNoteCommand({
       id: 'delete-note',
       label: 'Delete Note',
-      shortcut: '⌘⌫',
+      shortcut: getAppCommandShortcutDisplay(APP_COMMAND_IDS.noteDelete),
       keywords: ['delete', 'remove'],
       enabled: config.hasActiveNote,
       path: config.activeTabPath,
@@ -116,7 +134,7 @@ function buildPinnedNoteCommands(config: NoteCommandsConfig): CommandAction[] {
     createNoteCommand({
       id: 'toggle-favorite',
       label: config.isFavorite ? 'Remove from Favorites' : 'Add to Favorites',
-      shortcut: '⌘D',
+      shortcut: getAppCommandShortcutDisplay(APP_COMMAND_IDS.noteToggleFavorite),
       keywords: ['favorite', 'star', 'bookmark', 'pin'],
       enabled: config.hasActiveNote && !!config.onToggleFavorite,
       path: config.activeTabPath,
@@ -125,7 +143,7 @@ function buildPinnedNoteCommands(config: NoteCommandsConfig): CommandAction[] {
     createNoteCommand({
       id: 'toggle-organized',
       label: config.isOrganized ? 'Mark as Unorganized' : 'Mark as Organized',
-      shortcut: '⌘E',
+      shortcut: getAppCommandShortcutDisplay(APP_COMMAND_IDS.noteToggleOrganized),
       keywords: ['organized', 'inbox', 'triage', 'done'],
       enabled: config.hasActiveNote && !!config.onToggleOrganized,
       path: config.activeTabPath,
@@ -137,6 +155,7 @@ function buildPinnedNoteCommands(config: NoteCommandsConfig): CommandAction[] {
 function buildOptionalNoteCommands(config: NoteCommandsConfig): CommandAction[] {
   return [
     ...buildRecoveryCommands(config),
+    ...buildFileActionCommands(config),
     ...buildRetargetingCommands(config),
     ...buildPresentationCommands(config),
   ]
@@ -180,6 +199,38 @@ function buildRetargetingCommands(config: NoteCommandsConfig): CommandAction[] {
   ]
 }
 
+function buildFileActionCommands(config: NoteCommandsConfig): CommandAction[] {
+  const activeFileKind = config.activeFileKind ?? 'markdown'
+  const hasNonMarkdownActiveFile = config.hasActiveNote && activeFileKind !== 'markdown'
+
+  return [
+    createNoteCommand({
+      id: 'reveal-active-file',
+      label: 'Reveal in Finder',
+      keywords: ['file', 'folder', 'finder', 'reveal', 'show', 'filesystem'],
+      enabled: config.hasActiveNote && !!config.onRevealActiveFile,
+      path: config.activeTabPath,
+      run: (path) => config.onRevealActiveFile?.(path),
+    }),
+    createNoteCommand({
+      id: 'copy-active-file-path',
+      label: 'Copy File Path',
+      keywords: ['file', 'path', 'copy', 'clipboard', 'filesystem'],
+      enabled: config.hasActiveNote && !!config.onCopyActiveFilePath,
+      path: config.activeTabPath,
+      run: (path) => config.onCopyActiveFilePath?.(path),
+    }),
+    createNoteCommand({
+      id: 'open-active-file-external',
+      label: 'Open in Default App',
+      keywords: ['file', 'open', 'external', 'default', 'attachment'],
+      enabled: hasNonMarkdownActiveFile && !!config.onOpenActiveFileExternal,
+      path: config.activeTabPath,
+      run: (path) => config.onOpenActiveFileExternal?.(path),
+    }),
+  ]
+}
+
 function buildPresentationCommands(config: NoteCommandsConfig): CommandAction[] {
   return [
     createNoteCommand({
@@ -192,7 +243,7 @@ function buildPresentationCommands(config: NoteCommandsConfig): CommandAction[] 
     createNoteCommand({
       id: 'open-in-new-window',
       label: 'Open in New Window',
-      shortcut: '⌘⇧O',
+      shortcut: getAppCommandShortcutDisplay(APP_COMMAND_IDS.noteOpenInNewWindow),
       keywords: ['window', 'new', 'detach', 'pop', 'external', 'separate'],
       enabled: config.hasActiveNote,
       execute: () => config.onOpenInNewWindow?.(),

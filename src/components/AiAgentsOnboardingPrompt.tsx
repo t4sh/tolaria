@@ -1,6 +1,7 @@
-import { ArrowUpRight, Bot, CheckCircle2, Loader2 } from 'lucide-react'
+import { ArrowUpRight, CheckCircle as CheckCircle2, CircleNotch as Loader2, Cloud, HardDrive, Robot as Bot, Terminal } from '@phosphor-icons/react'
 import {
   AI_AGENT_DEFINITIONS,
+  getAiAgentAvailability,
   getAiAgentDefinition,
   hasAnyInstalledAiAgent,
   isAiAgentsStatusChecking,
@@ -19,8 +20,8 @@ interface AiAgentsOnboardingPromptProps {
 function getPromptCopy(statuses: AiAgentsStatus) {
   if (isAiAgentsStatusChecking(statuses)) {
     return {
-      accentClassName: 'bg-slate-100 text-slate-600',
-      description: 'Checking which AI agents are available on this machine.',
+      accentClassName: 'bg-muted text-muted-foreground',
+      description: 'Checking coding agents. You can also use a local model or API provider.',
       icon: <Loader2 className="size-7 animate-spin" />,
       title: 'Checking AI agents',
     }
@@ -28,26 +29,60 @@ function getPromptCopy(statuses: AiAgentsStatus) {
 
   if (!hasAnyInstalledAiAgent(statuses)) {
     return {
-      accentClassName: 'bg-amber-100 text-amber-700',
-      description: 'Tolaria works best with a local CLI AI agent installed.',
+      accentClassName: 'bg-[var(--feedback-warning-bg)] text-[var(--feedback-warning-text)]',
+      description: 'Connect a local model, an API provider, or a desktop coding agent.',
       icon: <Bot className="size-7" />,
-      title: 'No AI agents detected',
+      title: 'Choose how Tolaria should use AI',
     }
   }
 
   return {
-    accentClassName: 'bg-emerald-100 text-emerald-700',
-    description: 'Your AI agents are ready to use in Tolaria.',
+    accentClassName: 'bg-[var(--feedback-success-bg)] text-[var(--feedback-success-text)]',
+    description: 'You can use the detected coding agents, or add local/API models in Settings.',
     icon: <CheckCircle2 className="size-7" />,
-    title: 'AI agents ready',
+    title: 'AI is ready',
   }
+}
+
+function AiModeChoices() {
+  const choices = [
+    {
+      icon: <HardDrive className="size-4" />,
+      title: 'Local model',
+      description: 'Use Ollama, LM Studio, or another local OpenAI-compatible endpoint. API keys are usually not needed.',
+    },
+    {
+      icon: <Cloud className="size-4" />,
+      title: 'API provider',
+      description: 'Use OpenAI, Anthropic, OpenRouter, or a gateway. API keys are read from environment variables, not saved in settings.',
+    },
+    {
+      icon: <Terminal className="size-4" />,
+      title: 'Coding agent',
+      description: 'Use Claude Code, Codex, OpenCode, Gemini CLI, or Pi for tool-capable vault editing on desktop.',
+    },
+  ]
+
+  return (
+    <div className="grid gap-3 md:grid-cols-3">
+      {choices.map((choice) => (
+        <div key={choice.title} className="rounded-lg border border-border bg-muted/20 p-3 text-left">
+          <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
+            {choice.icon}
+            {choice.title}
+          </div>
+          <div className="text-xs leading-5 text-muted-foreground">{choice.description}</div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function AgentStatusList({ statuses }: { statuses: AiAgentsStatus }) {
   return (
     <div className="space-y-3">
       {AI_AGENT_DEFINITIONS.map((definition) => {
-        const status = statuses[definition.id]
+        const status = getAiAgentAvailability(statuses, definition.id)
         const ready = status.status === 'installed'
         return (
           <div
@@ -63,7 +98,7 @@ function AgentStatusList({ statuses }: { statuses: AiAgentsStatus }) {
               </div>
             </div>
             <span
-              className={`rounded-full px-2 py-1 text-[11px] font-medium ${ready ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}
+              className={`rounded-full px-2 py-1 text-[11px] font-medium ${ready ? 'bg-[var(--feedback-success-bg)] text-[var(--feedback-success-text)]' : 'bg-[var(--feedback-warning-bg)] text-[var(--feedback-warning-text)]'}`}
             >
               {ready ? 'Installed' : 'Missing'}
             </span>
@@ -79,8 +114,8 @@ export function AiAgentsOnboardingPrompt({
   onContinue,
 }: AiAgentsOnboardingPromptProps) {
   const copy = getPromptCopy(statuses)
-  const showLegacyClaudeCompatibility = statuses.claude_code.status !== 'installed'
-  const missingAgents = AI_AGENT_DEFINITIONS.filter((definition) => statuses[definition.id].status === 'missing')
+  const showLegacyClaudeCompatibility = getAiAgentAvailability(statuses, 'claude_code').status !== 'installed'
+  const missingAgents = AI_AGENT_DEFINITIONS.filter((definition) => getAiAgentAvailability(statuses, definition.id).status === 'missing')
 
   return (
     <OnboardingShell
@@ -88,8 +123,11 @@ export function AiAgentsOnboardingPrompt({
       contentClassName="w-full max-w-2xl"
       testId="ai-agents-onboarding-screen"
     >
-      <Card className="border-border bg-background shadow-sm">
-        <CardHeader className="items-center gap-5 text-center">
+      <Card
+        className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden border-border bg-background shadow-sm"
+        data-testid="ai-agents-onboarding-card"
+      >
+        <CardHeader className="shrink-0 items-center gap-5 text-center">
           <div className={`flex size-16 items-center justify-center rounded-2xl ${copy.accentClassName}`}>
             {copy.icon}
           </div>
@@ -103,14 +141,18 @@ export function AiAgentsOnboardingPrompt({
           </div>
         </CardHeader>
 
-        <CardContent className="space-y-4">
+        <CardContent
+          className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain"
+          data-testid="ai-agents-onboarding-scroll"
+        >
+          <AiModeChoices />
           {showLegacyClaudeCompatibility ? (
             <div
-              className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-left"
+              className="rounded-lg border border-[var(--feedback-warning-border)] bg-[var(--feedback-warning-bg)] px-4 py-3 text-left"
               data-testid="claude-onboarding-screen"
             >
-              <div className="text-sm font-medium text-amber-900">Claude Code not detected</div>
-              <p className="mt-1 text-xs leading-5 text-amber-800">
+              <div className="text-sm font-medium text-[var(--feedback-warning-text)]">Claude Code not detected</div>
+              <p className="mt-1 text-xs leading-5 text-[var(--feedback-warning-text)]">
                 Install Claude Code or continue without it.
               </p>
             </div>
@@ -118,7 +160,7 @@ export function AiAgentsOnboardingPrompt({
           <AgentStatusList statuses={statuses} />
         </CardContent>
 
-        <CardFooter className="flex-wrap justify-center gap-3">
+        <CardFooter className="shrink-0 flex-wrap justify-center gap-3">
           {missingAgents.map((definition) => (
             <Button
               key={definition.id}
@@ -138,7 +180,7 @@ export function AiAgentsOnboardingPrompt({
               disabled={isAiAgentsStatusChecking(statuses)}
               data-testid={showLegacyClaudeCompatibility ? 'claude-onboarding-continue' : undefined}
             >
-              {hasAnyInstalledAiAgent(statuses) ? 'Continue' : 'Continue without it'}
+              {hasAnyInstalledAiAgent(statuses) ? 'Continue' : 'Set up later'}
             </Button>
           </div>
         </CardFooter>

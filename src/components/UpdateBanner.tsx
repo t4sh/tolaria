@@ -1,12 +1,14 @@
 import type { CSSProperties } from 'react'
-import { Download, ExternalLink, RefreshCw, X } from 'lucide-react'
+import { ArrowSquareOut as ExternalLink, ArrowsClockwise as RefreshCw, Download, X } from '@phosphor-icons/react'
 import type { UpdateStatus, UpdateActions } from '../hooks/useUpdater'
 import { restartApp } from '../hooks/useUpdater'
 import { Button } from './ui/button'
+import { translate, type AppLocale } from '../lib/i18n'
 
 interface UpdateBannerProps {
   status: UpdateStatus
   actions: UpdateActions
+  locale?: AppLocale
 }
 
 type VisibleUpdateStatus = Exclude<UpdateStatus, { state: 'idle' } | { state: 'error' }>
@@ -16,29 +18,29 @@ const bannerStyle = {
   alignItems: 'center',
   gap: 10,
   padding: '6px 12px',
-  background: '#1a56db',
+  background: 'var(--accent-blue)',
   borderBottom: 'none',
   fontSize: 13,
-  color: '#fff',
+  color: 'var(--text-inverse)',
   flexShrink: 0,
 } satisfies CSSProperties
 
 const iconStyle = {
-  color: '#fff',
+  color: 'var(--text-inverse)',
   flexShrink: 0,
 } satisfies CSSProperties
 
 const primaryActionStyle = {
   marginLeft: 'auto',
   padding: '3px 10px',
-  background: 'var(--primary)',
-  color: '#fff',
+  background: 'var(--text-inverse)',
+  color: 'var(--accent-blue)',
   fontSize: 12,
   fontWeight: 500,
 } satisfies CSSProperties
 
 const dismissButtonStyle = {
-  color: '#fff',
+  color: 'var(--text-inverse)',
   display: 'flex',
   padding: 2,
 } satisfies CSSProperties
@@ -47,27 +49,27 @@ const progressTrackStyle = {
   flex: 1,
   maxWidth: 200,
   height: 4,
-  background: 'rgba(255,255,255,0.3)',
+  background: 'color-mix(in srgb, var(--text-inverse) 30%, transparent)',
   borderRadius: 2,
   overflow: 'hidden',
 } satisfies CSSProperties
 
 const progressTextStyle = {
   fontSize: 11,
-  color: 'rgba(255,255,255,0.85)',
+  color: 'color-mix(in srgb, var(--text-inverse) 85%, transparent)',
 } satisfies CSSProperties
 
 const readyIconStyle = {
-  color: 'var(--accent-green, #0F7B0F)',
+  color: 'var(--accent-green)',
   flexShrink: 0,
 } satisfies CSSProperties
 
-function renderAvailableContent(status: Extract<VisibleUpdateStatus, { state: 'available' }>, actions: UpdateActions) {
+function renderAvailableContent(status: Extract<VisibleUpdateStatus, { state: 'available' }>, actions: UpdateActions, locale: AppLocale) {
   return (
     <>
       <Download size={14} style={iconStyle} />
       <span>
-        <strong>Tolaria {status.displayVersion}</strong> is available
+        <strong>Tolaria {status.displayVersion}</strong> {translate(locale, 'update.available')}
       </span>
       <Button
         type="button"
@@ -75,9 +77,9 @@ function renderAvailableContent(status: Extract<VisibleUpdateStatus, { state: 'a
         size="xs"
         data-testid="update-release-notes"
         onClick={actions.openReleaseNotes}
-        style={{ color: '#fff', padding: 0, height: 'auto' }}
+        style={{ color: 'var(--text-inverse)', padding: 0, height: 'auto' }}
       >
-        Release Notes <ExternalLink size={11} />
+        {translate(locale, 'update.releaseNotes')} <ExternalLink size={11} />
       </Button>
       <Button
         type="button"
@@ -86,7 +88,7 @@ function renderAvailableContent(status: Extract<VisibleUpdateStatus, { state: 'a
         onClick={actions.startDownload}
         style={primaryActionStyle}
       >
-        Update Now
+        {translate(locale, 'update.updateNow')}
       </Button>
       <Button
         type="button"
@@ -95,7 +97,7 @@ function renderAvailableContent(status: Extract<VisibleUpdateStatus, { state: 'a
         data-testid="update-dismiss"
         onClick={actions.dismiss}
         style={dismissButtonStyle}
-        aria-label="Dismiss"
+        aria-label={translate(locale, 'update.dismiss')}
       >
         <X size={14} />
       </Button>
@@ -103,18 +105,27 @@ function renderAvailableContent(status: Extract<VisibleUpdateStatus, { state: 'a
   )
 }
 
-function renderDownloadingContent(status: Extract<VisibleUpdateStatus, { state: 'downloading' }>) {
+function renderCheckingContent(locale: AppLocale) {
   return (
     <>
       <RefreshCw size={14} style={{ ...iconStyle, animation: 'spin 1s linear infinite' }} />
-      <span>Downloading Tolaria {status.displayVersion}...</span>
+      <span>{translate(locale, 'update.checking')}</span>
+    </>
+  )
+}
+
+function renderDownloadingContent(status: Extract<VisibleUpdateStatus, { state: 'downloading' }>, locale: AppLocale) {
+  return (
+    <>
+      <RefreshCw size={14} style={{ ...iconStyle, animation: 'spin 1s linear infinite' }} />
+      <span>{translate(locale, 'update.downloading', { version: status.displayVersion })}</span>
       <div style={progressTrackStyle}>
         <div
           data-testid="update-progress"
           style={{
             width: `${Math.round(status.progress * 100)}%`,
             height: '100%',
-            background: 'var(--primary)',
+            background: 'var(--text-inverse)',
             borderRadius: 2,
             transition: 'width 0.2s ease',
           }}
@@ -125,12 +136,12 @@ function renderDownloadingContent(status: Extract<VisibleUpdateStatus, { state: 
   )
 }
 
-function renderReadyContent(status: Extract<VisibleUpdateStatus, { state: 'ready' }>) {
+function renderReadyContent(status: Extract<VisibleUpdateStatus, { state: 'ready' }>, locale: AppLocale) {
   return (
     <>
       <RefreshCw size={14} style={readyIconStyle} />
       <span>
-        <strong>Tolaria {status.displayVersion}</strong> is ready - restart to apply
+        <strong>Tolaria {status.displayVersion}</strong> {translate(locale, 'update.readyRestart')}
       </span>
       <Button
         type="button"
@@ -139,28 +150,31 @@ function renderReadyContent(status: Extract<VisibleUpdateStatus, { state: 'ready
         onClick={restartApp}
         style={{
           ...primaryActionStyle,
-          background: 'var(--accent-green, #0F7B0F)',
+          background: 'var(--accent-green)',
+          color: 'var(--text-inverse)',
         }}
       >
-        Restart Now
+        {translate(locale, 'update.restartNow')}
       </Button>
     </>
   )
 }
 
-function renderBannerContent(status: VisibleUpdateStatus, actions: UpdateActions) {
+function renderBannerContent(status: VisibleUpdateStatus, actions: UpdateActions, locale: AppLocale) {
   switch (status.state) {
+    case 'checking':
+      return renderCheckingContent(locale)
     case 'available':
-      return renderAvailableContent(status, actions)
+      return renderAvailableContent(status, actions, locale)
     case 'downloading':
-      return renderDownloadingContent(status)
+      return renderDownloadingContent(status, locale)
     case 'ready':
-      return renderReadyContent(status)
+      return renderReadyContent(status, locale)
   }
 }
 
-export function UpdateBanner({ status, actions }: UpdateBannerProps) {
+export function UpdateBanner({ status, actions, locale = 'en' }: UpdateBannerProps) {
   if (status.state === 'idle' || status.state === 'error') return null
 
-  return <div data-testid="update-banner" style={bannerStyle}>{renderBannerContent(status, actions)}</div>
+  return <div data-testid="update-banner" style={bannerStyle}>{renderBannerContent(status, actions, locale)}</div>
 }

@@ -12,13 +12,23 @@ const forwardedArgs = process.argv.slice(2)
 const hasFileParallelismOverride = forwardedArgs.some((arg) =>
   arg === '--fileParallelism' || arg === '--no-file-parallelism'
 )
+const hasMaxWorkersOverride = forwardedArgs.some((arg) =>
+  arg === '--maxWorkers' || arg.startsWith('--maxWorkers=')
+)
 const maxAttempts = 2
 
+// Standalone pnpm installs ship a native binary, so npm_execpath points at
+// a Mach-O/ELF executable. Only reuse process.execPath (node) when the path
+// is something node can actually load as a module.
 const packageManagerExec = process.env.npm_execpath
-const command = packageManagerExec ? process.execPath : 'pnpm'
-const baseCommandArgs = packageManagerExec
+const isJsExecpath = packageManagerExec && /\.[mc]?js$/i.test(packageManagerExec)
+const command = isJsExecpath ? process.execPath : 'pnpm'
+const baseCommandArgs = isJsExecpath
   ? [packageManagerExec, 'exec', 'vitest', 'run', '--coverage']
   : ['exec', 'vitest', 'run', '--coverage']
+const clearCacheCommandArgs = isJsExecpath
+  ? [packageManagerExec, 'exec', 'vitest', '--clearCache']
+  : ['exec', 'vitest', '--clearCache']
 
 function isKnownVitestInternalStateFlake(output) {
   return output.includes('Vitest failed to access its internal state.')
@@ -39,13 +49,15 @@ async function runCoverageAttempt(attempt) {
   await mkdir(runCoverageDir, { recursive: true })
   // Vitest writes per-worker coverage shards under reportsDirectory/.tmp.
   await mkdir(runCoverageTempDir, { recursive: true })
+  await clearVitestCache()
 
   const commandArgs = [
     ...baseCommandArgs,
-    // Vitest 4.0.18 occasionally crashes during coverage worker teardown
-    // after all files pass, so serialize file execution unless a caller
-    // explicitly opts into a different file-parallelism mode.
-    ...(hasFileParallelismOverride ? [] : ['--no-file-parallelism']),
+    // Keep coverage fast enough for CI while avoiding the unbounded worker
+    // contention that makes a few DOM-heavy suites time out under full
+    // file parallelism. Callers can still opt into serial or wider runs.
+    ...(hasFileParallelismOverride ? [] : ['--fileParallelism']),
+    ...(hasMaxWorkersOverride ? [] : ['--maxWorkers=4']),
     `--coverage.reportsDirectory=${runCoverageDir}`,
     ...forwardedArgs,
   ]
@@ -88,6 +100,30 @@ async function runCoverageAttempt(attempt) {
     exitCode,
     output,
     runCoverageDir,
+  }
+}
+
+async function clearVitestCache() {
+  const exitCode = await new Promise((resolveExit, rejectExit) => {
+    const child = spawn(command, clearCacheCommandArgs, {
+      cwd: rootDir,
+      env: process.env,
+      stdio: 'inherit',
+    })
+
+    child.on('error', rejectExit)
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        rejectExit(new Error(`Vitest cache clear exited via signal: ${signal}`))
+        return
+      }
+
+      resolveExit(code ?? 1)
+    })
+  })
+
+  if (exitCode !== 0) {
+    throw new Error(`Vitest cache clear failed with exit code ${exitCode}`)
   }
 }
 

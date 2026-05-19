@@ -1,13 +1,31 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
+import type { Event as TauriEvent, UnlistenFn } from '@tauri-apps/api/event'
+import type { DragDropEvent as TauriDragDropPayload } from '@tauri-apps/api/webview'
 import { isTauri } from '../mock-tauri'
+import { attachmentAssetUrlFromPath } from '../utils/vaultAttachments'
 
 const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'tiff']
+const TAURI_DRAG_DROP_EVENT = 'tauri://drag-drop'
+const TAURI_DRAG_LEAVE_EVENT = 'tauri://drag-leave'
+
+type ImageUrlHandler = (url: string) => void
+type TauriDropEvent = TauriEvent<TauriDragDropPayload>
+type CopyImageToVaultRequest = {
+  sourcePath: string
+  vaultPath: string
+}
+type DroppedImagesRequest = {
+  imagePaths: string[]
+  vaultPath: string | undefined
+  onImageUrl: ImageUrlHandler | undefined
+}
 
 function hasImageFiles(dt: DataTransfer): boolean {
   for (let i = 0; i < dt.items.length; i++) {
-    if (dt.items[i].kind === 'file' && IMAGE_MIME_TYPES.includes(dt.items[i].type)) return true
+    const item = Reflect.get(dt.items, i) as DataTransferItem | undefined
+    if (item?.kind === 'file' && IMAGE_MIME_TYPES.includes(item.type)) return true
   }
   return false
 }
@@ -23,14 +41,14 @@ export async function uploadImageFile(file: File, vaultPath?: string): Promise<s
     const buf = await file.arrayBuffer()
     const bytes = new Uint8Array(buf)
     let binary = ''
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes.at(i) ?? 0)
     const base64 = btoa(binary)
     const savedPath = await invoke<string>('save_image', {
       vaultPath,
       filename: file.name,
       data: base64,
     })
-    return convertFileSrc(savedPath)
+    return attachmentAssetUrlFromPath({ path: savedPath })
   }
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
@@ -41,9 +59,50 @@ export async function uploadImageFile(file: File, vaultPath?: string): Promise<s
 }
 
 /** Copy a dropped file (by OS path) into vault/attachments and return its asset URL. */
-async function copyImageToVault(sourcePath: string, vaultPath: string): Promise<string> {
+async function copyImageToVault({
+  sourcePath,
+  vaultPath,
+}: CopyImageToVaultRequest): Promise<string> {
   const savedPath = await invoke<string>('copy_image_to_vault', { vaultPath, sourcePath })
-  return convertFileSrc(savedPath)
+  return attachmentAssetUrlFromPath({ path: savedPath })
+}
+
+function insertDroppedImages({
+  imagePaths,
+  vaultPath,
+  onImageUrl,
+}: DroppedImagesRequest): void {
+  if (imagePaths.length === 0) return
+  if (!vaultPath || !onImageUrl) return
+
+  for (const sourcePath of imagePaths) {
+    void copyImageToVault({ sourcePath, vaultPath }).then(onImageUrl)
+  }
+}
+
+function cleanupNativeDropListeners(unlisteners: UnlistenFn[]): void {
+  for (const unlisten of unlisteners) {
+    void Promise.resolve()
+      .then(unlisten)
+      .catch(() => {})
+  }
+}
+
+async function registerNativeDropListeners(
+  handler: (event: TauriDropEvent) => void,
+): Promise<UnlistenFn[]> {
+  const { getCurrentWebview } = await import('@tauri-apps/api/webview')
+  const webview = getCurrentWebview()
+  const unlisteners: UnlistenFn[] = []
+
+  try {
+    unlisteners.push(await webview.listen<TauriDragDropPayload>(TAURI_DRAG_DROP_EVENT, handler))
+    unlisteners.push(await webview.listen<TauriDragDropPayload>(TAURI_DRAG_LEAVE_EVENT, handler))
+    return unlisteners
+  } catch (error) {
+    cleanupNativeDropListeners(unlisteners)
+    throw error
+  }
 }
 
 interface UseImageDropOptions {
@@ -60,7 +119,7 @@ export function useImageDrop({ containerRef, onImageUrl, vaultPath }: UseImageDr
   const vaultPathRef = useRef(vaultPath)
   useEffect(() => { vaultPathRef.current = vaultPath }, [vaultPath])
 
-  // HTML5 DnD visual feedback (works in browser mode; BlockNote handles the actual upload)
+  // HTML5 DnD visual feedback; BlockNote handles browser-mode uploads.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -79,8 +138,6 @@ export function useImageDrop({ containerRef, onImageUrl, vaultPath }: UseImageDr
     }
 
     const handleDrop = () => {
-      // Only reset visual state; BlockNote's native dropFile plugin handles
-      // the actual upload (via editor.uploadFile) and block insertion.
       setIsDragOver(false)
     }
 
@@ -95,45 +152,38 @@ export function useImageDrop({ containerRef, onImageUrl, vaultPath }: UseImageDr
     }
   }, [containerRef])
 
-  // Tauri native file drop — intercepts OS file drops that bypass HTML5 DnD
+  // Tauri native file drop intercepts OS file drops that bypass HTML5 DnD.
   useEffect(() => {
     if (!isTauri()) return
 
-    let unlisten: (() => void) | null = null
+    let unlisteners: UnlistenFn[] = []
     let mounted = true
 
     void (async () => {
       try {
-        const { getCurrentWebview } = await import('@tauri-apps/api/webview')
-        if (!mounted) return
-        unlisten = await getCurrentWebview().onDragDropEvent((event) => {
-          const payload = event.payload
-          if (payload.type === 'over') {
-            // Tauri 'over' events don't include paths and can't distinguish
-            // OS file drags from internal drags (tabs, blocks). Let the HTML5
-            // dragover handler drive isDragOver — it checks hasImageFiles().
-          } else if (payload.type === 'drop') {
+        const nextUnlisteners = await registerNativeDropListeners((event) => {
+          if (event.payload.type === 'drop') {
             setIsDragOver(false)
-            const imagePaths = payload.paths.filter(isImagePath)
-            const vault = vaultPathRef.current
-            const callback = onImageUrlRef.current
-            if (imagePaths.length > 0 && vault && callback) {
-              for (const sourcePath of imagePaths) {
-                void copyImageToVault(sourcePath, vault).then(callback)
-              }
-            }
-          } else {
-            setIsDragOver(false)
+            insertDroppedImages({
+              imagePaths: event.payload.paths.filter(isImagePath),
+              vaultPath: vaultPathRef.current,
+              onImageUrl: onImageUrlRef.current,
+            })
+            return
           }
+          setIsDragOver(false)
         })
+        if (mounted) unlisteners = nextUnlisteners
+        else cleanupNativeDropListeners(nextUnlisteners)
       } catch {
-        // Tauri webview API not available (e.g. older Tauri version)
+        // Tauri webview API not available.
       }
     })()
 
     return () => {
       mounted = false
-      unlisten?.()
+      cleanupNativeDropListeners(unlisteners)
+      unlisteners = []
     }
   }, [])
 

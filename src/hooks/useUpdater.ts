@@ -6,10 +6,10 @@ import {
   type AppUpdateDownloadEvent,
   type AppUpdateMetadata,
 } from '../lib/appUpdater'
+import { formatCalendarVersionForDisplay } from '../utils/calendarVersion'
 import { openExternalUrl } from '../utils/url'
 
-const RELEASE_NOTES_URL = 'https://refactoringhq.github.io/tolaria/'
-const CALENDAR_VERSION_PATTERN = /^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-(alpha|stable)\.(\d+))?$/
+const RELEASE_NOTES_URL = 'https://tolaria.md/releases/'
 
 interface UpdateVersionInfo {
   version: string
@@ -18,12 +18,16 @@ interface UpdateVersionInfo {
 
 export type UpdateStatus =
   | { state: 'idle' }
+  | { state: 'checking' }
   | ({ state: 'available'; notes: string | undefined } & UpdateVersionInfo)
   | ({ state: 'downloading'; progress: number } & UpdateVersionInfo)
   | ({ state: 'ready' } & UpdateVersionInfo)
   | { state: 'error' }
 
-export type UpdateCheckResult = 'up-to-date' | 'available' | 'error'
+export type UpdateCheckResult =
+  | { kind: 'up-to-date' }
+  | ({ kind: 'available' } & UpdateVersionInfo)
+  | { kind: 'error'; message: string }
 
 export interface UpdateActions {
   checkForUpdates: () => Promise<UpdateCheckResult>
@@ -37,17 +41,7 @@ function formatReleaseDisplayVersion(version: string): string {
   if (!normalizedVersion) return normalizedVersion
 
   const baseVersion = normalizedVersion.split('+')[0]
-  const match = baseVersion.match(CALENDAR_VERSION_PATTERN)
-  if (!match) return baseVersion
-
-  const [, year, month, day, channel, sequence] = match
-  const calendarVersion = `${Number(year)}.${Number(month)}.${Number(day)}`
-
-  if (channel === 'alpha' && sequence) {
-    return `Alpha ${calendarVersion}.${Number(sequence)}`
-  }
-
-  return calendarVersion
+  return formatCalendarVersionForDisplay(baseVersion) ?? baseVersion
 }
 
 function createVersionInfo(version: string): UpdateVersionInfo {
@@ -55,6 +49,16 @@ function createVersionInfo(version: string): UpdateVersionInfo {
     version,
     displayVersion: formatReleaseDisplayVersion(version),
   }
+}
+
+function buildUpdateCheckErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return `Could not check for updates: ${error.message}`
+  }
+  if (typeof error === 'string' && error.trim()) {
+    return `Could not check for updates: ${error}`
+  }
+  return 'Could not check for updates'
 }
 
 function toAvailableStatus(update: AppUpdateMetadata): UpdateStatus {
@@ -96,22 +100,26 @@ export function useUpdater(
   const updateRef = useRef<AppUpdateMetadata | null>(null)
 
   const checkForUpdates = useCallback(async (): Promise<UpdateCheckResult> => {
-    if (!isTauri()) return 'up-to-date'
+    if (!isTauri()) return { kind: 'up-to-date' }
+
+    setStatus({ state: 'checking' })
 
     try {
       const update = await checkForAppUpdate(releaseChannel)
       if (!update) {
         updateRef.current = null
         setStatus({ state: 'idle' })
-        return 'up-to-date'
+        return { kind: 'up-to-date' }
       }
 
+      const versionInfo = createVersionInfo(update.version)
       updateRef.current = update
       setStatus(toAvailableStatus(update))
-      return 'available'
-    } catch {
+      return { kind: 'available', ...versionInfo }
+    } catch (error) {
       console.warn('[updater] Failed to check for updates')
-      return 'error'
+      setStatus({ state: 'error' })
+      return { kind: 'error', message: buildUpdateCheckErrorMessage(error) }
     }
   }, [releaseChannel])
 
@@ -163,7 +171,8 @@ export async function restartApp(): Promise<void> {
   try {
     const { relaunch } = await import('@tauri-apps/plugin-process')
     await relaunch()
-  } catch {
+  } catch (error) {
+    void error
     console.warn('[updater] Failed to relaunch')
   }
 }

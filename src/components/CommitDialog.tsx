@@ -3,7 +3,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
+import { formatShortcutDisplay } from '../hooks/appCommandCatalog'
 import type { CommitMode } from '../hooks/useCommitFlow'
+import { GitRepositorySelect } from './GitRepositorySelect'
+import type { GitRepositoryOption } from '../utils/gitRepositories'
+import { translate, type AppLocale } from '../lib/i18n'
 
 type CommitDialogCopy = {
   title: string
@@ -13,12 +17,14 @@ type CommitDialogCopy = {
 }
 
 function getDialogCopy(commitMode: CommitMode): CommitDialogCopy {
+  const submitShortcut = formatShortcutDisplay({ display: '⌘↵' })
+
   if (commitMode === 'local') {
     return {
       title: 'Commit',
       description: 'This vault has no git remote configured. Tolaria will create a local commit only.',
       actionLabel: 'Commit',
-      shortcutHint: 'Cmd+Enter to commit locally',
+      shortcutHint: `${submitShortcut} to commit locally`,
     }
   }
 
@@ -26,7 +32,7 @@ function getDialogCopy(commitMode: CommitMode): CommitDialogCopy {
     title: 'Commit & Push',
     description: 'Review changed files and enter a commit message before committing and pushing.',
     actionLabel: 'Commit & Push',
-    shortcutHint: 'Cmd+Enter to commit',
+    shortcutHint: `${submitShortcut} to commit`,
   }
 }
 
@@ -46,7 +52,11 @@ interface CommitDialogProps {
   open: boolean
   modifiedCount: number
   commitMode?: CommitMode
+  locale?: AppLocale
+  repositories?: GitRepositoryOption[]
+  selectedRepositoryPath?: string
   suggestedMessage?: string
+  onRepositoryChange?: (path: string) => void
   onCommit: (message: string) => void
   onClose: () => void
 }
@@ -55,7 +65,11 @@ export function CommitDialog({
   open,
   modifiedCount,
   commitMode = 'push',
+  locale = 'en',
+  repositories = [],
+  selectedRepositoryPath = '',
   suggestedMessage,
+  onRepositoryChange,
   onCommit,
   onClose,
 }: CommitDialogProps) {
@@ -97,6 +111,15 @@ export function CommitDialog({
           </div>
           <DialogDescription>{copy.description}</DialogDescription>
         </DialogHeader>
+        {onRepositoryChange && selectedRepositoryPath && (
+          <GitRepositorySelect
+            label={translate(locale, 'git.repository.select')}
+            repositories={repositories}
+            selectedPath={selectedRepositoryPath}
+            onChange={onRepositoryChange}
+            testId="commit-repository-select"
+          />
+        )}
         <Textarea
           ref={inputRef}
           className="min-h-[84px] resize-y bg-[var(--bg-input)] py-2.5 text-[13px]"

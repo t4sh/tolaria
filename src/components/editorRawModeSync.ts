@@ -1,7 +1,10 @@
 import type { useCreateBlockNote } from '@blocknote/react'
+import type { MutableRefObject, SetStateAction } from 'react'
 import type { VaultEntry } from '../types'
-import { splitFrontmatter, restoreWikilinksInBlocks } from '../utils/wikilinks'
-import { compactMarkdown } from '../utils/compact-markdown'
+import { hasDurableEditorBlocks } from '../utils/editorDurableMarkdown'
+import {
+  serializeRichEditorDocumentToMarkdown,
+} from '../utils/richEditorMarkdown'
 
 interface Tab {
   entry: VaultEntry
@@ -11,6 +14,45 @@ interface Tab {
 export interface PendingRawExitContent {
   path: string
   content: string
+}
+
+export interface RawModeContentTransition {
+  pendingExitContent: PendingRawExitContent | null
+  rawModeContentOverride: PendingRawExitContent | null
+}
+
+export function createRawModeContentTransition(): RawModeContentTransition {
+  return {
+    pendingExitContent: null,
+    rawModeContentOverride: null,
+  }
+}
+
+function resolvePendingRawExitContentAction(
+  action: SetStateAction<PendingRawExitContent | null>,
+  current: PendingRawExitContent | null,
+): PendingRawExitContent | null {
+  return typeof action === 'function' ? action(current) : action
+}
+
+export function withPendingRawExitContent(
+  transition: RawModeContentTransition,
+  action: SetStateAction<PendingRawExitContent | null>,
+): RawModeContentTransition {
+  return {
+    ...transition,
+    pendingExitContent: resolvePendingRawExitContentAction(action, transition.pendingExitContent),
+  }
+}
+
+export function withRawModeContentOverride(
+  transition: RawModeContentTransition,
+  action: SetStateAction<PendingRawExitContent | null>,
+): RawModeContentTransition {
+  return {
+    ...transition,
+    rawModeContentOverride: resolvePendingRawExitContentAction(action, transition.rawModeContentOverride),
+  }
 }
 
 export function buildPendingRawExitContent(
@@ -24,12 +66,10 @@ export function buildPendingRawExitContent(
 export function serializeEditorDocumentToMarkdown(
   editor: ReturnType<typeof useCreateBlockNote>,
   tabContent: string,
+  vaultPath?: string,
+  notePath?: string,
 ): string {
-  const blocks = editor.document
-  const restored = restoreWikilinksInBlocks(blocks)
-  const bodyMarkdown = compactMarkdown(editor.blocksToMarkdownLossy(restored as typeof blocks))
-  const [frontmatter] = splitFrontmatter(tabContent)
-  return `${frontmatter}${bodyMarkdown}`
+  return serializeRichEditorDocumentToMarkdown(editor, tabContent, vaultPath, notePath)
 }
 
 export function applyPendingRawExitContent(
@@ -73,12 +113,24 @@ export function syncActiveTabIntoRawBuffer(options: {
   editor: ReturnType<typeof useCreateBlockNote>
   activeTabPath: string | null
   activeTabContent: string | null
-  rawLatestContentRef: React.MutableRefObject<string | null>
+  rawLatestContentRef: MutableRefObject<string | null>
+  serializeRichEditorContent?: boolean
+  vaultPath?: string
 }) {
-  const { editor, activeTabPath, activeTabContent, rawLatestContentRef } = options
+  const {
+    editor,
+    activeTabPath,
+    activeTabContent,
+    rawLatestContentRef,
+    serializeRichEditorContent = true,
+    vaultPath,
+  } = options
   if (!activeTabPath || activeTabContent === null) return null
 
-  const syncedContent = serializeEditorDocumentToMarkdown(editor, activeTabContent)
+  const shouldSerializeRichEditorContent = serializeRichEditorContent || hasDurableEditorBlocks(editor.document)
+  const syncedContent = shouldSerializeRichEditorContent
+    ? serializeEditorDocumentToMarkdown(editor, activeTabContent, vaultPath, activeTabPath)
+    : activeTabContent
   rawLatestContentRef.current = syncedContent
   return syncedContent
 }
@@ -87,7 +139,7 @@ export function rememberPendingRawExitContent(options: {
   activeTabPath: string | null
   activeTabContent: string | null
   rawInitialContent: string | null
-  rawLatestContentRef: React.MutableRefObject<string | null>
+  rawLatestContentRef: MutableRefObject<string | null>
   onContentChange?: (path: string, content: string) => void
 }) {
   const {

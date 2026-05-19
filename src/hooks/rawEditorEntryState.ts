@@ -1,6 +1,6 @@
-import type { VaultEntry } from '../types'
+import type { VaultEntry, VaultPropertyValue } from '../types'
 import { parseFrontmatter } from '../utils/frontmatter'
-import { frontmatterToEntryPatch } from './frontmatterOps'
+import { frontmatterToEntryPatch, type PropertiesPatch } from './frontmatterOps'
 
 function createRawEditorEntryState(): Partial<VaultEntry> {
   return {
@@ -30,23 +30,23 @@ function createRawEditorEntryState(): Partial<VaultEntry> {
 function mergeRelationships(target: Record<string, string[]>, source: Record<string, string[] | null> | null): void {
   if (!source) return
   for (const [key, value] of Object.entries(source)) {
-    if (Array.isArray(value) && value.length > 0) target[key] = value
+    if (Array.isArray(value) && value.length > 0) Reflect.set(target, key, value)
   }
 }
 
 function mergeProperties(
-  target: Record<string, string | number | boolean | null>,
-  source: Record<string, string | number | boolean | null> | null,
+  target: Record<string, VaultPropertyValue>,
+  source: PropertiesPatch | null,
 ): void {
   if (!source) return
   for (const [key, value] of Object.entries(source)) {
-    if (value !== null) target[key] = value
+    if (value !== null) Reflect.set(target, key, value)
   }
 }
 
 export function deriveRawEditorEntryState(content: string): Partial<VaultEntry> {
   const derived = createRawEditorEntryState()
-  const properties: Record<string, string | number | boolean | null> = {}
+  const properties: Record<string, VaultPropertyValue> = {}
   const relationships: Record<string, string[]> = {}
 
   for (const [key, value] of Object.entries(parseFrontmatter(content))) {

@@ -1,7 +1,6 @@
 use std::path::Path;
-use std::process::Command;
 
-use super::run_git;
+use super::{ensure_author_config, git_command, run_git};
 
 /// List files with merge conflicts (unmerged paths).
 ///
@@ -10,7 +9,7 @@ use super::run_git;
 /// stale (e.g. after a reboot or when MERGE_HEAD is missing).
 pub fn get_conflict_files(vault_path: &str) -> Result<Vec<String>, String> {
     let vault = Path::new(vault_path);
-    let output = Command::new("git")
+    let output = git_command()
         .args(["ls-files", "--unmerged"])
         .current_dir(vault)
         .output()
@@ -91,15 +90,17 @@ pub fn git_commit_conflict_resolution(vault_path: &str) -> Result<String, String
         ));
     }
 
+    ensure_author_config(vault)?;
+
     let mode = get_conflict_mode(vault_path);
     let output = match mode.as_str() {
-        "rebase" => Command::new("git")
+        "rebase" => git_command()
             .args(["rebase", "--continue"])
             .env("GIT_EDITOR", "true")
             .current_dir(vault)
             .output()
             .map_err(|e| format!("Failed to run git rebase --continue: {}", e))?,
-        _ => Command::new("git")
+        _ => git_command()
             .args(["commit", "-m", "Resolve merge conflicts"])
             .current_dir(vault)
             .output()
@@ -131,8 +132,31 @@ mod tests {
     use crate::git::tests::{setup_git_repo, setup_remote_pair};
     use crate::git::{git_commit, git_pull, git_push};
     use std::fs;
-    use std::process::Command;
+    use std::path::Path;
     use tempfile::TempDir;
+
+    fn unset_local_author_config(vault: &Path) {
+        for key in ["user.name", "user.email"] {
+            let status = git_command()
+                .args(["config", "--local", "--unset-all", key])
+                .current_dir(vault)
+                .status()
+                .unwrap();
+            assert!(status.success(), "failed to unset {key}");
+        }
+    }
+
+    fn local_config_value(vault: &Path, key: &str) -> Option<String> {
+        let output = git_command()
+            .args(["config", "--local", key])
+            .current_dir(vault)
+            .output()
+            .unwrap();
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 
     #[test]
     fn test_get_conflict_files_empty_when_clean() {
@@ -203,35 +227,30 @@ mod tests {
         (bare_dir, clone_a_dir, clone_b_dir)
     }
 
-    #[test]
-    fn test_resolve_conflict_ours() {
+    fn assert_resolve_conflict_strategy(strategy: &str, expected_content: &str) {
         let (_bare, _clone_a, clone_b) = setup_conflict_pair();
         let vp_b = clone_b.path().to_str().unwrap();
 
         let conflicts = get_conflict_files(vp_b).unwrap();
         assert!(conflicts.contains(&"conflict.md".to_string()));
 
-        git_resolve_conflict(vp_b, "conflict.md", "ours").unwrap();
+        git_resolve_conflict(vp_b, "conflict.md", strategy).unwrap();
 
         let remaining = get_conflict_files(vp_b).unwrap();
         assert!(remaining.is_empty());
 
         let content = fs::read_to_string(clone_b.path().join("conflict.md")).unwrap();
-        assert_eq!(content, "# Version B\n");
+        assert_eq!(content, expected_content);
+    }
+
+    #[test]
+    fn test_resolve_conflict_ours() {
+        assert_resolve_conflict_strategy("ours", "# Version B\n");
     }
 
     #[test]
     fn test_resolve_conflict_theirs() {
-        let (_bare, _clone_a, clone_b) = setup_conflict_pair();
-        let vp_b = clone_b.path().to_str().unwrap();
-
-        git_resolve_conflict(vp_b, "conflict.md", "theirs").unwrap();
-
-        let remaining = get_conflict_files(vp_b).unwrap();
-        assert!(remaining.is_empty());
-
-        let content = fs::read_to_string(clone_b.path().join("conflict.md")).unwrap();
-        assert_eq!(content, "# Version A\n");
+        assert_resolve_conflict_strategy("theirs", "# Version A\n");
     }
 
     #[test]
@@ -244,7 +263,7 @@ mod tests {
         let result = git_commit_conflict_resolution(vp_b);
         assert!(result.is_ok());
 
-        let log = Command::new("git")
+        let log = git_command()
             .args(["log", "--oneline", "-1"])
             .current_dir(clone_b.path())
             .output()
@@ -289,6 +308,30 @@ mod tests {
         assert_eq!(get_conflict_mode(vp_b), "none");
     }
 
+    #[test]
+    fn test_commit_conflict_resolution_sets_missing_local_author_identity() {
+        let (_bare, _clone_a, clone_b) = setup_conflict_pair();
+        let vault = clone_b.path();
+        let vp_b = vault.to_str().unwrap();
+
+        git_resolve_conflict(vp_b, "conflict.md", "ours").unwrap();
+        unset_local_author_config(vault);
+
+        let result = git_commit_conflict_resolution(vp_b);
+        assert!(
+            result.is_ok(),
+            "conflict commit should set local fallback identity: {result:?}"
+        );
+        assert_eq!(
+            local_config_value(vault, "user.name").as_deref(),
+            Some("Tolaria")
+        );
+        assert_eq!(
+            local_config_value(vault, "user.email").as_deref(),
+            Some("vault@tolaria.md")
+        );
+    }
+
     /// Set up a rebase conflict: clone_b has diverged from origin and
     /// `git pull --rebase` causes a conflict.
     fn setup_rebase_conflict_pair() -> (TempDir, TempDir, TempDir) {
@@ -310,7 +353,7 @@ mod tests {
         fs::write(clone_b_dir.path().join("conflict.md"), "# Version B\n").unwrap();
         git_commit(vp_b, "B's change").unwrap();
 
-        let output = Command::new("git")
+        let output = git_command()
             .args(["pull", "--rebase"])
             .current_dir(clone_b_dir.path())
             .output()

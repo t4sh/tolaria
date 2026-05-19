@@ -142,14 +142,32 @@ describe('mockHandlers additional coverage', () => {
     expect(mockHandlers.get_vault_ai_guidance_status()).toEqual({
       agents_state: 'managed',
       claude_state: 'managed',
+      gemini_state: 'managed',
       can_restore: false,
     })
     expect(mockHandlers.restore_vault_ai_guidance()).toEqual({
       agents_state: 'managed',
       claude_state: 'managed',
+      gemini_state: 'managed',
       can_restore: false,
     })
     expect(mockHandlers.repair_vault()).toBe('Vault repaired')
+  })
+
+  it('persists theme mode through the mock settings backend', async () => {
+    const { mockHandlers } = await loadHandlers()
+    const settings = mockHandlers.get_settings()
+
+    mockHandlers.save_settings({
+      settings: {
+        ...settings,
+        theme_mode: 'dark',
+      },
+    })
+
+    expect(mockHandlers.get_settings()).toEqual(expect.objectContaining({
+      theme_mode: 'dark',
+    }))
   })
 
   it('surfaces the simple command handlers for git, conflicts, trash, and telemetry', async () => {
@@ -176,9 +194,10 @@ describe('mockHandlers additional coverage', () => {
     expect(mockHandlers.migrate_is_a_to_type()).toBe(0)
     expect(mockHandlers.register_mcp_tools()).toBe('registered')
     expect(mockHandlers.check_mcp_status()).toBe('installed')
+    expect(mockHandlers.copy_text_to_clipboard()).toBeNull()
+    expect(mockHandlers.read_text_from_clipboard()).toBe('')
     expect(mockHandlers.reinit_telemetry()).toBeNull()
     expect(mockHandlers.stream_claude_chat()).toBe('mock-session')
-    expect(mockHandlers.stream_claude_agent()).toBeNull()
     expect(mockHandlers.stream_ai_agent()).toBeNull()
   })
 })

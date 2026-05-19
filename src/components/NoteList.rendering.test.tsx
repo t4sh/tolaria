@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { NoteList } from './NoteList'
 import { openNoteListPropertiesPicker } from './note-list/noteListPropertiesEvents'
+import { AppPreferencesProvider } from '../hooks/useAppPreferences'
 import {
   allSelection,
   buildNoteListProps,
@@ -295,7 +296,7 @@ describe('NoteList rendering', () => {
     }
   })
 
-  it('keeps the note-list search input full width and shows only an inline spinner while loading', () => {
+  it('keeps the note-list search input full width and shows inline search controls while loading', () => {
     vi.useFakeTimers()
     try {
       renderNoteList({
@@ -309,8 +310,9 @@ describe('NoteList rendering', () => {
       fireEvent.change(screen.getByPlaceholderText('Search notes...'), { target: { value: 'strategy' } })
 
       const searchInput = screen.getByPlaceholderText('Search notes...')
-      expect(searchInput).toHaveClass('pr-8')
+      expect(searchInput).toHaveClass('pr-16')
       expect(searchInput.parentElement).toHaveClass('relative', 'flex-1')
+      expect(screen.getByRole('button', { name: 'Clear search' })).toBeInTheDocument()
       expect(screen.getByTestId('note-list-search-loading')).toBeInTheDocument()
       expect(screen.queryByText('Searching...')).not.toBeInTheDocument()
 
@@ -653,6 +655,23 @@ describe('NoteList rendering', () => {
     const chip = screen.getByTestId('property-chip-phase-0')
     expect(chip).toHaveTextContent('• Draft')
     expect(chip).toHaveStyle({ backgroundColor: 'var(--accent-yellow-light)', color: 'var(--accent-yellow)' })
+  })
+
+  it('formats date properties in note-list chips with the selected display format', async () => {
+    const built = buildNoteListProps({
+      entries: makeBookTypeEntries(['Due'], { properties: { Due: '2026-05-11' } }),
+      selection: { kind: 'sectionGroup', type: 'Book' },
+    })
+    render(
+      <AppPreferencesProvider dateDisplayFormat="european">
+        <NoteList {...built.props} />
+      </AppPreferencesProvider>,
+    )
+
+    expect(screen.getByTestId('property-chip-due-0')).toHaveTextContent('11/5/2026')
+
+    await searchNoteList('11/5/2026')
+    expect(screen.getByText('Book Note')).toBeInTheDocument()
   })
 
   it('keeps unknown status values on neutral note-list chip styling', () => {

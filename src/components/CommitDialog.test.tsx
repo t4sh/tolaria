@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { CommitDialog } from './CommitDialog'
+import { formatShortcutDisplay } from '../hooks/appCommandCatalog'
 
 describe('CommitDialog', () => {
   const onCommit = vi.fn()
@@ -105,11 +106,32 @@ describe('CommitDialog', () => {
   })
 
   it('switches to local-only copy when commitMode is local', () => {
+    const submitShortcut = formatShortcutDisplay({ display: '⌘↵' })
     render(<CommitDialog open={true} modifiedCount={2} commitMode="local" onCommit={onCommit} onClose={onClose} />)
 
     expect(screen.getByRole('heading', { name: 'Commit' })).toBeInTheDocument()
     expect(screen.getByText('This vault has no git remote configured. Tolaria will create a local commit only.')).toBeInTheDocument()
-    expect(screen.getByText('Cmd+Enter to commit locally')).toBeInTheDocument()
+    expect(screen.getByText(`${submitShortcut} to commit locally`)).toBeInTheDocument()
     expect(getActionButton('Commit')).toBeDisabled()
+  })
+
+  it('shows a repository selector when multiple repositories are available', () => {
+    render(
+      <CommitDialog
+        open={true}
+        modifiedCount={2}
+        repositories={[
+          { path: '/default', label: 'Default', defaultForNewNotes: true },
+          { path: '/work', label: 'Work', defaultForNewNotes: false },
+        ]}
+        selectedRepositoryPath="/work"
+        onRepositoryChange={vi.fn()}
+        onCommit={onCommit}
+        onClose={onClose}
+      />,
+    )
+
+    expect(screen.getByTestId('commit-repository-select')).toBeInTheDocument()
+    expect(screen.getByText('Work')).toBeInTheDocument()
   })
 })

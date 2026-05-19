@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
+
+use super::credentials::request_remote_credentials;
+use super::{ensure_author_config, git_command};
 
 const DEFAULT_REMOTE_NAME: &str = "origin";
 
@@ -90,6 +93,8 @@ pub fn git_add_remote(vault_path: &str, remote_url: &str) -> Result<GitAddRemote
         ));
     }
 
+    ensure_author_config(vault)?;
+
     let branch = current_branch(vault)?;
     if branch.is_empty() {
         return Ok(connect_result(
@@ -99,10 +104,9 @@ pub fn git_add_remote(vault_path: &str, remote_url: &str) -> Result<GitAddRemote
     }
     let connection = RemoteConnection::new(branch);
 
-    run_git(
-        vault,
-        &["remote", "add", DEFAULT_REMOTE_NAME, remote_url.trim()],
-    )?;
+    let trimmed_url = remote_url.trim();
+    run_git(vault, &["remote", "add", DEFAULT_REMOTE_NAME, trimmed_url])?;
+    request_remote_credentials(vault, trimmed_url);
 
     let result = finish_remote_connection(vault, &connection);
     if result.status != "connected" {
@@ -192,14 +196,14 @@ fn list_remotes(vault: &Path) -> Result<Vec<String>, String> {
 }
 
 fn unset_upstream(vault: &Path) {
-    let _ = Command::new("git")
+    let _ = git_command()
         .args(["branch", "--unset-upstream"])
         .current_dir(vault)
         .output();
 }
 
 fn run_git(vault: &Path, args: &[&str]) -> Result<(), String> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(vault)
         .output()
@@ -237,7 +241,7 @@ fn list_remote_branches(vault: &Path) -> Result<Vec<String>, String> {
 }
 
 fn histories_share_base(vault: &Path, connection: &RemoteConnection) -> bool {
-    Command::new("git")
+    git_command()
         .args(["merge-base", "HEAD", connection.remote_branch.as_str()])
         .current_dir(vault)
         .output()
@@ -315,7 +319,7 @@ fn classify_connect_error(stderr: &str) -> GitAddRemoteResult {
 }
 
 fn git_output(vault: &Path, args: &[&str]) -> Result<Output, String> {
-    Command::new("git")
+    git_command()
         .args(args)
         .current_dir(vault)
         .output()
@@ -442,6 +446,28 @@ mod tests {
         git_commit(path.to_str().unwrap(), message).unwrap();
     }
 
+    fn clear_local_author(path: &Path) {
+        for key in ["user.name", "user.email"] {
+            StdCommand::new("git")
+                .args(["config", "--local", "--unset-all", key])
+                .current_dir(path)
+                .output()
+                .unwrap();
+        }
+    }
+
+    fn local_author_is_configured(path: &Path) -> bool {
+        ["user.name", "user.email"].into_iter().all(|key| {
+            let output = StdCommand::new("git")
+                .args(["config", "--local", key])
+                .current_dir(path)
+                .output()
+                .unwrap();
+
+            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+        })
+    }
+
     #[test]
     fn disconnect_all_remotes_removes_every_remote() {
         let dir = setup_git_repo();
@@ -485,6 +511,26 @@ mod tests {
         let status = git_remote_status(local.path().to_str().unwrap()).unwrap();
         assert!(status.has_remote);
         assert_eq!((status.ahead, status.behind), (0, 0));
+    }
+
+    #[test]
+    fn git_add_remote_sets_local_identity_when_existing_repo_has_none() {
+        let local = setup_git_repo();
+        create_local_commit(local.path(), "note.md", "Local", "Initial local commit");
+        clear_local_author(local.path());
+        assert!(!local_author_is_configured(local.path()));
+
+        let bare = TempDir::new().unwrap();
+        init_bare_remote(bare.path());
+
+        let result = git_add_remote(
+            local.path().to_str().unwrap(),
+            bare.path().to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(result.status, "connected");
+        assert!(local_author_is_configured(local.path()));
     }
 
     #[test]

@@ -102,14 +102,20 @@ const mockSavedSinceCommit = new Set<string>()
 
 let mockSettings: Settings = {
   auto_pull_interval_minutes: 5,
+  git_enabled: null,
   autogit_enabled: false,
   autogit_idle_threshold_seconds: 90,
   autogit_inactive_threshold_seconds: 30,
+  auto_advance_inbox_after_organize: false,
   telemetry_consent: false,
   crash_reporting_enabled: null,
   analytics_enabled: null,
   anonymous_id: null,
   release_channel: null,
+  theme_mode: null,
+  ui_language: null,
+  note_width_mode: null,
+  sidebar_type_pluralization_enabled: null,
   default_ai_agent: 'claude_code',
 }
 
@@ -120,9 +126,7 @@ const DEFAULT_MOCK_VAULT = {
 }
 
 let mockLastVaultPath: string | null = DEFAULT_MOCK_VAULT_PATH
-const mockRemoteStateByVault: Record<string, boolean> = {
-  [DEFAULT_MOCK_VAULT_PATH]: true,
-}
+const mockRemoteStateByVault = new Map<string, boolean>([[DEFAULT_MOCK_VAULT_PATH, true]])
 
 let mockVaultList: { vaults: Array<{ label: string; path: string }>; active_vault: string | null } = {
   vaults: [DEFAULT_MOCK_VAULT],
@@ -132,6 +136,7 @@ let mockVaultList: { vaults: Array<{ label: string; path: string }>; active_vaul
 let mockVaultAiGuidanceStatus = {
   agents_state: 'managed',
   claude_state: 'managed',
+  gemini_state: 'managed',
   can_restore: false,
 } as const
 
@@ -143,17 +148,29 @@ function normalizeMockVaultPath(path: string | null | undefined): string | null 
 function setMockRemoteState(path: string | null | undefined, hasRemote: boolean): void {
   const normalizedPath = normalizeMockVaultPath(path)
   if (!normalizedPath) return
-  mockRemoteStateByVault[normalizedPath] = hasRemote
+  mockRemoteStateByVault.set(normalizedPath, hasRemote)
 }
 
 function getMockRemoteState(path: string | null | undefined): boolean {
   const normalizedPath = normalizeMockVaultPath(path)
   if (!normalizedPath) return true
-  return mockRemoteStateByVault[normalizedPath] ?? true
+  return mockRemoteStateByVault.get(normalizedPath) ?? true
 }
 
-function escapeRegex({ text }: { text: string }) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+type MockContentPath = { path: string }
+type MockContentWrite = MockContentPath & { content: string }
+
+function readMockContent({ path }: MockContentPath): string {
+  const content = Reflect.get(MOCK_CONTENT, path)
+  return typeof content === 'string' ? content : ''
+}
+
+function writeMockContent({ path, content }: MockContentWrite): void {
+  Reflect.set(MOCK_CONTENT, path, content)
+}
+
+function deleteMockContent({ path }: MockContentPath): void {
+  Reflect.deleteProperty(MOCK_CONTENT, path)
 }
 
 function relativePathStem({ path, vaultPath }: { path: string; vaultPath: string }) {
@@ -188,10 +205,41 @@ function replaceRenamedWikilinks({ content, oldTargets, newPathStem }: {
   newPathStem: string
 }) {
   if (oldTargets.length === 0) return content
-  const pattern = new RegExp(`\\[\\[(?:${oldTargets.map((target) => escapeRegex({ text: target })).join('|')})(\\|[^\\]]*?)?\\]\\]`, 'g')
-  return content.replace(pattern, (_match: string, pipe: string | undefined) =>
-    pipe ? `[[${newPathStem}${pipe}]]` : `[[${newPathStem}]]`
-  )
+  const targets = new Set(oldTargets)
+  let rewritten = ''
+  let cursor = 0
+
+  while (cursor < content.length) {
+    const start = content.indexOf('[[', cursor)
+    if (start === -1) break
+
+    const end = content.indexOf(']]', start + 2)
+    if (end === -1) break
+
+    rewritten += content.slice(cursor, start)
+    rewritten += renamedWikilinkToken({
+      newPathStem,
+      targets,
+      token: content.slice(start, end + 2),
+    })
+    cursor = end + 2
+  }
+
+  return rewritten + content.slice(cursor)
+}
+
+function renamedWikilinkToken({ newPathStem, targets, token }: {
+  newPathStem: string
+  targets: Set<string>
+  token: string
+}) {
+  const body = token.slice(2, -2)
+  const pipeIndex = body.indexOf('|')
+  const target = pipeIndex === -1 ? body : body.slice(0, pipeIndex)
+  if (!targets.has(target)) return token
+
+  const pipe = pipeIndex === -1 ? '' : body.slice(pipeIndex)
+  return `[[${newPathStem}${pipe}]]`
 }
 
 function updateMockRenameReferences({ newPath, newPathStem, oldTargets }: {
@@ -204,7 +252,7 @@ function updateMockRenameReferences({ newPath, newPathStem, oldTargets }: {
     if (path === newPath) continue
     const replaced = replaceRenamedWikilinks({ content, oldTargets, newPathStem })
     if (replaced === content) continue
-    MOCK_CONTENT[path] = replaced
+    writeMockContent({ path, content: replaced })
     updatedFiles += 1
   }
   return updatedFiles
@@ -213,7 +261,7 @@ function updateMockRenameReferences({ newPath, newPathStem, oldTargets }: {
 function handleRenameNote(args: { vault_path: string; old_path: string; new_title: string; old_title?: string | null }) {
   const oldEntry = MOCK_ENTRIES.find(e => e.path === args.old_path)
   const oldTitle = args.old_title ?? oldEntry?.title ?? ''
-  const oldContent = MOCK_CONTENT[args.old_path] ?? ''
+  const oldContent = readMockContent({ path: args.old_path })
   const newPath = buildRenamedMockPath({ oldPath: args.old_path, newTitle: args.new_title })
   const oldPathStem = relativePathStem({ path: args.old_path, vaultPath: args.vault_path })
   const newPathStem = relativePathStem({ path: newPath, vaultPath: args.vault_path })
@@ -223,8 +271,8 @@ function handleRenameNote(args: { vault_path: string; old_path: string; new_titl
   }
 
   const newContent = replaceMockTitleFrontmatter({ content: oldContent, newTitle: args.new_title })
-  delete MOCK_CONTENT[args.old_path]
-  MOCK_CONTENT[newPath] = newContent
+  deleteMockContent({ path: args.old_path })
+  writeMockContent({ path: newPath, content: newContent })
   const oldTargets = canonicalRenameTargets({ oldTitle, oldPathStem })
   const updatedFiles = updateMockRenameReferences({ newPath, newPathStem, oldTargets })
 
@@ -238,7 +286,7 @@ function handleRenameNoteFilename(args: {
   new_filename_stem: string
 }) {
   const oldEntry = MOCK_ENTRIES.find(e => e.path === args.old_path)
-  const oldContent = MOCK_CONTENT[args.old_path] ?? ''
+  const oldContent = readMockContent({ path: args.old_path })
   const oldTitle = oldEntry?.title ?? ''
   const normalizedStem = args.new_filename_stem.trim().replace(/\.md$/, '')
   const oldFilename = args.old_path.split('/').pop() ?? ''
@@ -257,8 +305,8 @@ function handleRenameNoteFilename(args: {
     throw new Error('A note with that name already exists')
   }
 
-  delete MOCK_CONTENT[args.old_path]
-  MOCK_CONTENT[newPath] = oldContent
+  deleteMockContent({ path: args.old_path })
+  writeMockContent({ path: newPath, content: oldContent })
 
   const oldPathStem = relativePathStem({ path: args.old_path, vaultPath: args.vault_path })
   const newPathStem = relativePathStem({ path: newPath, vaultPath: args.vault_path })
@@ -275,7 +323,7 @@ function handleMoveNoteToFolder(args: {
   folder_path: string
 }) {
   const oldEntry = MOCK_ENTRIES.find(e => e.path === args.old_path)
-  const oldContent = MOCK_CONTENT[args.old_path] ?? ''
+  const oldContent = readMockContent({ path: args.old_path })
   const oldTitle = oldEntry?.title ?? ''
   const oldFilename = args.old_path.split('/').pop() ?? ''
   const normalizedFolderPath = args.folder_path.trim().replace(/^\/+|\/+$/g, '')
@@ -293,11 +341,48 @@ function handleMoveNoteToFolder(args: {
     throw new Error('A note with that name already exists')
   }
 
-  delete MOCK_CONTENT[args.old_path]
-  MOCK_CONTENT[newPath] = oldContent
+  deleteMockContent({ path: args.old_path })
+  writeMockContent({ path: newPath, content: oldContent })
 
   const oldPathStem = relativePathStem({ path: args.old_path, vaultPath: args.vault_path })
   const newPathStem = relativePathStem({ path: newPath, vaultPath: args.vault_path })
+  const oldTargets = canonicalRenameTargets({ oldTitle, oldPathStem })
+  const updatedFiles = updateMockRenameReferences({ newPath, newPathStem, oldTargets })
+
+  syncWindowContent()
+  return { new_path: newPath, updated_files: updatedFiles, failed_updates: 0 }
+}
+
+function handleMoveNoteToWorkspace(args: {
+  source_vault_path: string
+  destination_vault_path: string
+  old_path: string
+  replacement_target?: string | null
+}) {
+  const oldEntry = MOCK_ENTRIES.find(e => e.path === args.old_path)
+  const oldContent = readMockContent({ path: args.old_path })
+  const oldTitle = oldEntry?.title ?? ''
+  const oldFilename = args.old_path.split('/').pop() ?? ''
+  const sourceRoot = args.source_vault_path.replace(/\/+$/, '')
+  const destinationRoot = args.destination_vault_path.replace(/\/+$/, '')
+  const relativePath = args.old_path.startsWith(`${sourceRoot}/`)
+    ? args.old_path.slice(sourceRoot.length + 1)
+    : oldFilename
+  const newPath = `${destinationRoot}/${relativePath}`
+
+  if (newPath === args.old_path) {
+    return { new_path: args.old_path, updated_files: 0, failed_updates: 0 }
+  }
+  if (Object.prototype.hasOwnProperty.call(MOCK_CONTENT, newPath)) {
+    throw new Error('A note with that name already exists')
+  }
+
+  deleteMockContent({ path: args.old_path })
+  writeMockContent({ path: newPath, content: oldContent })
+
+  const oldPathStem = relativePathStem({ path: args.old_path, vaultPath: args.source_vault_path })
+  const newPathStem = args.replacement_target
+    ?? relativePathStem({ path: newPath, vaultPath: args.destination_vault_path })
   const oldTargets = canonicalRenameTargets({ oldTitle, oldPathStem })
   const updatedFiles = updateMockRenameReferences({ newPath, newPathStem, oldTargets })
 
@@ -316,6 +401,7 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   reload_vault_entry: (args: { path: string }) => MOCK_ENTRIES.find(e => e.path === args.path) ?? { path: args.path, title: 'Unknown', filename: 'unknown.md', aliases: [], belongsTo: [], relatedTo: [], archived: false, snippet: '', wordCount: 0, fileSize: 0, relationships: {}, outgoingLinks: [], properties: {} },
   sync_note_title: () => false,
   get_note_content: (args: { path: string }) => MOCK_CONTENT[args.path] ?? '',
+  validate_note_content: (args: { path: string; content: string }) => (MOCK_CONTENT[args.path] ?? '') === args.content,
   get_all_content: () => MOCK_CONTENT,
   get_file_history: (args: { path: string }) => mockFileHistory(args.path),
   get_modified_files: () => {
@@ -336,7 +422,10 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     return `[main abc1234] ${args.message}\n ${count} files changed`
   },
   get_build_number: () => 'bDEV',
+  should_use_external_media_preview: () => false,
   get_last_commit_info: (): LastCommitInfo => ({ shortHash: 'a1b2c3d', commitUrl: 'https://github.com/lucaong/laputa-vault/commit/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0' }),
+  is_git_repo: () => true,
+  init_git_repo: () => null,
   git_pull: (): GitPullResult => ({ status: 'up_to_date', message: 'Already up to date', updatedFiles: [], conflictFiles: [] }),
   git_push: (): GitPushResult => ({ status: 'ok', message: 'Pushed to remote' }),
   git_remote_status: (args?: { vaultPath?: string; vault_path?: string }): GitRemoteStatus => {
@@ -373,18 +462,23 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   get_ai_agents_status: () => ({
     claude_code: { installed: false, version: null },
     codex: { installed: false, version: null },
+    opencode: { installed: false, version: null },
+    pi: { installed: false, version: null },
+    gemini: { installed: false, version: null },
+    kiro: { installed: false, version: null },
   }),
+  get_agent_docs_path: () => '/mock/Tolaria/resources/agent-docs',
   get_vault_ai_guidance_status: () => ({ ...mockVaultAiGuidanceStatus }),
   restore_vault_ai_guidance: () => {
     mockVaultAiGuidanceStatus = {
       agents_state: 'managed',
       claude_state: 'managed',
+      gemini_state: 'managed',
       can_restore: false,
     }
     return { ...mockVaultAiGuidanceStatus }
   },
   stream_claude_chat: () => 'mock-session',
-  stream_claude_agent: () => null,
   stream_ai_agent: () => null,
   save_note_content: (args: { path: string; content: string }) => {
     MOCK_CONTENT[args.path] = args.content
@@ -406,14 +500,20 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     const s = args.settings
     mockSettings = {
       auto_pull_interval_minutes: s.auto_pull_interval_minutes ?? 5,
+      git_enabled: s.git_enabled ?? null,
       autogit_enabled: s.autogit_enabled ?? false,
       autogit_idle_threshold_seconds: s.autogit_idle_threshold_seconds ?? 90,
       autogit_inactive_threshold_seconds: s.autogit_inactive_threshold_seconds ?? 30,
+      auto_advance_inbox_after_organize: s.auto_advance_inbox_after_organize ?? false,
       telemetry_consent: s.telemetry_consent,
       crash_reporting_enabled: s.crash_reporting_enabled,
       analytics_enabled: s.analytics_enabled,
       anonymous_id: s.anonymous_id,
       release_channel: s.release_channel,
+      theme_mode: s.theme_mode ?? null,
+      ui_language: s.ui_language ?? null,
+      note_width_mode: s.note_width_mode ?? null,
+      sidebar_type_pluralization_enabled: s.sidebar_type_pluralization_enabled ?? null,
       default_ai_agent: s.default_ai_agent ?? null,
     }
     return null
@@ -423,7 +523,13 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   rename_note: handleRenameNote,
   rename_note_filename: handleRenameNoteFilename,
   move_note_to_folder: handleMoveNoteToFolder,
+  move_note_to_workspace: handleMoveNoteToWorkspace,
   clone_repo: (args: { url: string; localPath?: string; local_path?: string }) => {
+    const localPath = args.localPath ?? args.local_path ?? ''
+    setMockRemoteState(localPath, true)
+    return `Cloned to ${localPath}`
+  },
+  clone_git_repo: (args: { url: string; localPath?: string; local_path?: string }) => {
     const localPath = args.localPath ?? args.local_path ?? ''
     setMockRemoteState(localPath, true)
     return `Cloned to ${localPath}`
@@ -472,10 +578,26 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   },
   register_mcp_tools: () => 'registered',
   check_mcp_status: () => 'installed',
+  get_mcp_config_snippet: () => JSON.stringify({
+    mcpServers: {
+      tolaria: {
+        type: 'stdio',
+        command: 'node',
+        args: ['/mock/Tolaria/mcp-server/index.js'],
+        env: {
+          WS_UI_PORT: '9711',
+        },
+      },
+    },
+  }, null, 2),
+  copy_text_to_clipboard: () => null,
+  read_text_from_clipboard: () => '',
+  sync_mcp_bridge_vault: (args: { vaultPath?: string | null }) => args.vaultPath ? 'started' : 'stopped',
   repair_vault: (): string => {
     mockVaultAiGuidanceStatus = {
       agents_state: 'managed',
       claude_state: 'managed',
+      gemini_state: 'managed',
       can_restore: false,
     }
     return 'Vault repaired'
@@ -484,12 +606,12 @@ export const mockHandlers: Record<string, (args: any) => any> = {
 }
 
 export function addMockEntry(_entry: VaultEntry, content: string): void {
-  MOCK_CONTENT[_entry.path] = content
+  writeMockContent({ path: _entry.path, content })
   syncWindowContent()
 }
 
 export function updateMockContent(path: string, content: string): void {
-  MOCK_CONTENT[path] = content
+  writeMockContent({ path, content })
   syncWindowContent()
 }
 

@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { isTauri, mockInvoke } from '../mock-tauri'
 import { APP_STORAGE_KEYS, LEGACY_APP_STORAGE_KEYS, getAppStorageItem } from '../constants/appStorage'
-import { buildGettingStartedVaultPath, formatGettingStartedCloneError } from '../utils/gettingStartedVault'
-import { pickFolder } from '../utils/vault-dialog'
+import {
+  buildGettingStartedVaultPath,
+  formatGettingStartedCloneError,
+  labelFromPath,
+} from '../utils/gettingStartedVault'
+import { formatFolderPickerActionError, pickFolder } from '../utils/vault-dialog'
 
 type OnboardingState =
   | { status: 'loading' }
@@ -12,6 +16,40 @@ type OnboardingState =
   | { status: 'ready'; vaultPath: string }
 
 type CreatingAction = 'template' | 'empty' | null
+type ReadyVaultSource = 'template' | 'empty' | 'existing'
+type OnVaultReady = (vaultPath: string, source: ReadyVaultSource) => void
+type RegisterVault = (
+  vaultPath: string,
+  label: string,
+  options?: { verifyAvailability?: boolean },
+) => Promise<void>
+type SetError = Dispatch<SetStateAction<string | null>>
+type SetCreatingAction = Dispatch<SetStateAction<CreatingAction>>
+
+interface TemplateVaultCreationOptions {
+  setState: Dispatch<SetStateAction<OnboardingState>>
+  setCreatingAction: SetCreatingAction
+  setError: SetError
+  setLastTemplatePath: Dispatch<SetStateAction<string | null>>
+  registerVault?: RegisterVault
+  onVaultReady?: OnVaultReady
+}
+
+interface OnboardingOptions {
+  onVaultReady?: OnVaultReady
+  registerVault?: RegisterVault
+}
+
+interface ReadyVaultHandlerOptions {
+  onVaultReady?: OnVaultReady
+  registerVault?: RegisterVault
+  setError: SetError
+  setState: Dispatch<SetStateAction<OnboardingState>>
+}
+
+interface CreateEmptyVaultHandlerOptions extends ReadyVaultHandlerOptions {
+  setCreatingAction: SetCreatingAction
+}
 
 function tauriCall<T>(command: string, args: Record<string, unknown>): Promise<T> {
   return isTauri() ? invoke<T>(command, args) : mockInvoke<T>(command, args)
@@ -52,28 +90,193 @@ async function clearMissingActiveVault(missingPath: string): Promise<boolean> {
       },
     })
     return true
-  } catch {
+  } catch (error) {
+    void error
     // Best effort only — onboarding should still proceed
     return false
   }
 }
 
+function markVaultReady(
+  setState: Dispatch<SetStateAction<OnboardingState>>,
+  vaultPath: string,
+) {
+  markDismissed()
+  setState({ status: 'ready', vaultPath })
+}
+
+function formatOnboardingRegistrationError({
+  action,
+  err,
+}: {
+  action: string
+  err: unknown
+}): string {
+  const message =
+    typeof err === 'string'
+      ? err
+      : err instanceof Error
+        ? err.message
+        : `${err}`
+
+  return message ? `${action}: ${message}` : action
+}
+
+async function registerVaultSelection(
+  registerVault: RegisterVault | undefined,
+  vaultPath: string,
+  options?: { verifyAvailability?: boolean },
+): Promise<void> {
+  if (!registerVault) {
+    return
+  }
+
+  const label = labelFromPath(vaultPath)
+  if (options) {
+    await registerVault(vaultPath, label, options)
+    return
+  }
+
+  await registerVault(vaultPath, label)
+}
+
+async function pickFolderWithOnboardingError({
+  action,
+  setError,
+  title,
+}: {
+  action: string
+  setError: SetError
+  title: string
+}): Promise<string | null> {
+  setError(null)
+
+  try {
+    return await pickFolder(title)
+  } catch (err) {
+    setError(formatFolderPickerActionError(action, err))
+    return null
+  }
+}
+
+function useTemplateVaultCreation(
+  options: TemplateVaultCreationOptions,
+) {
+  return useCallback(async (targetPath: string) => {
+    options.setCreatingAction('template')
+    options.setError(null)
+    options.setLastTemplatePath(targetPath)
+
+    try {
+      const vaultPath = await tauriCall<string>('create_getting_started_vault', { targetPath })
+      try {
+        await registerVaultSelection(options.registerVault, vaultPath, { verifyAvailability: false })
+      } catch (err) {
+        options.setError(formatOnboardingRegistrationError({
+          action: 'Could not register the Getting Started vault',
+          err,
+        }))
+        return
+      }
+      markVaultReady(options.setState, vaultPath)
+      options.onVaultReady?.(vaultPath, 'template')
+    } catch (err) {
+      options.setError(formatGettingStartedCloneError(err))
+    } finally {
+      options.setCreatingAction(null)
+    }
+  }, [options])
+}
+
+function useCreateVaultHandler(
+  createTemplateVault: (targetPath: string) => Promise<void>,
+  setError: SetError,
+) {
+  return useCallback(async () => {
+    const parentPath = await pickFolderWithOnboardingError({
+      action: 'Could not choose a parent folder',
+      setError,
+      title: 'Choose a parent folder for the Getting Started vault',
+    })
+    if (!parentPath) return
+
+    await createTemplateVault(buildGettingStartedVaultPath(parentPath))
+  }, [createTemplateVault, setError])
+}
+
+function useCreateEmptyVaultHandler(
+  options: CreateEmptyVaultHandlerOptions,
+) {
+  return useCallback(async () => {
+    const path = await pickFolderWithOnboardingError({
+      action: 'Could not choose where to create your vault',
+      setError: options.setError,
+      title: 'Choose where to create your vault',
+    })
+    if (!path) return
+
+    try {
+      options.setCreatingAction('empty')
+      const vaultPath = await tauriCall<string>('create_empty_vault', { targetPath: path })
+      try {
+        await registerVaultSelection(options.registerVault, vaultPath, { verifyAvailability: false })
+      } catch (err) {
+        options.setError(formatOnboardingRegistrationError({
+          action: 'Could not register the new vault',
+          err,
+        }))
+        return
+      }
+      markVaultReady(options.setState, vaultPath)
+      options.onVaultReady?.(vaultPath, 'empty')
+    } catch (err) {
+      options.setError(typeof err === 'string' ? err : `Failed to create vault: ${err}`)
+    } finally {
+      options.setCreatingAction(null)
+    }
+  }, [options])
+}
+
+function useOpenFolderHandler(
+  options: ReadyVaultHandlerOptions,
+) {
+  return useCallback(async () => {
+    const path = await pickFolderWithOnboardingError({
+      action: 'Failed to open folder',
+      setError: options.setError,
+      title: 'Open vault folder',
+    })
+    if (!path) return
+
+    try {
+      await registerVaultSelection(options.registerVault, path)
+    } catch (err) {
+      options.setError(formatOnboardingRegistrationError({
+        action: 'Could not open vault',
+        err,
+      }))
+      return
+    }
+
+    markVaultReady(options.setState, path)
+    options.onVaultReady?.(path, 'existing')
+  }, [options])
+}
+
 export function useOnboarding(
   initialVaultPath: string,
-  onTemplateVaultReady?: (vaultPath: string) => void,
+  options: OnboardingOptions = {},
   initialVaultResolved = true,
 ) {
   const [state, setState] = useState<OnboardingState>({ status: 'loading' })
   const [creatingAction, setCreatingAction] = useState<CreatingAction>(null)
   const [error, setError] = useState<string | null>(null)
   const [lastTemplatePath, setLastTemplatePath] = useState<string | null>(null)
-  const [userReadyVaultPath, setUserReadyVaultPath] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
 
     if (!initialVaultResolved) {
-      setState({ status: 'loading' })
       return () => { cancelled = true }
     }
 
@@ -98,7 +301,8 @@ export function useOnboarding(
         } else {
           setState({ status: 'welcome', defaultPath })
         }
-      } catch {
+      } catch (error) {
+        void error
         // If commands fail (e.g. mock mode), just proceed
         if (!cancelled) setState({ status: 'ready', vaultPath: initialVaultPath })
       }
@@ -108,71 +312,46 @@ export function useOnboarding(
     return () => { cancelled = true }
   }, [initialVaultPath, initialVaultResolved])
 
-  const createTemplateVault = useCallback(async (targetPath: string) => {
-    setCreatingAction('template')
-    setError(null)
-    setLastTemplatePath(targetPath)
-    try {
-      const vaultPath = await tauriCall<string>('create_getting_started_vault', { targetPath })
-      markDismissed()
-      setState({ status: 'ready', vaultPath })
-      setUserReadyVaultPath(vaultPath)
-      onTemplateVaultReady?.(vaultPath)
-    } catch (err) {
-      setError(formatGettingStartedCloneError(err))
-    } finally {
-      setCreatingAction(null)
-    }
-  }, [onTemplateVaultReady])
+  const createTemplateVault = useTemplateVaultCreation({
+    setState,
+    setCreatingAction,
+    setError,
+    setLastTemplatePath,
+    registerVault: options.registerVault,
+    onVaultReady: options.onVaultReady,
+  })
 
-  const handleCreateVault = useCallback(async () => {
-    const parentPath = await pickFolder('Choose a parent folder for the Getting Started vault')
-    if (!parentPath) return
-    await createTemplateVault(buildGettingStartedVaultPath(parentPath))
-  }, [createTemplateVault])
+  const handleCreateVault = useCreateVaultHandler(createTemplateVault, setError)
 
   const retryCreateVault = useCallback(async () => {
     if (!lastTemplatePath) return
     await createTemplateVault(lastTemplatePath)
   }, [createTemplateVault, lastTemplatePath])
 
-  const handleCreateEmptyVault = useCallback(async () => {
-    try {
-      setError(null)
-      const path = await pickFolder('Choose where to create your vault')
-      if (!path) return
-      setCreatingAction('empty')
-      const vaultPath = await tauriCall<string>('create_empty_vault', { targetPath: path })
-      markDismissed()
-      setState({ status: 'ready', vaultPath })
-      setUserReadyVaultPath(vaultPath)
-    } catch (err) {
-      setError(typeof err === 'string' ? err : `Failed to create vault: ${err}`)
-    } finally {
-      setCreatingAction(null)
-    }
-  }, [])
+  const handleCreateEmptyVault = useCreateEmptyVaultHandler({
+    onVaultReady: options.onVaultReady,
+    registerVault: options.registerVault,
+    setCreatingAction,
+    setError,
+    setState,
+  })
 
-  const handleOpenFolder = useCallback(async () => {
-    try {
-      setError(null)
-      const path = await pickFolder('Open vault folder')
-      if (!path) return
-      markDismissed()
-      setState({ status: 'ready', vaultPath: path })
-      setUserReadyVaultPath(path)
-    } catch (err) {
-      setError(`Failed to open folder: ${err}`)
-    }
-  }, [])
+  const handleOpenFolder = useOpenFolderHandler({
+    onVaultReady: options.onVaultReady,
+    registerVault: options.registerVault,
+    setError,
+    setState,
+  })
 
   const handleDismiss = useCallback(() => {
     markDismissed()
     setState({ status: 'ready', vaultPath: initialVaultPath })
   }, [initialVaultPath])
 
+  const resolvedState = initialVaultResolved ? state : { status: 'loading' as const }
+
   return {
-    state,
+    state: resolvedState,
     creating: creatingAction !== null,
     creatingAction,
     error,
@@ -182,6 +361,5 @@ export function useOnboarding(
     handleCreateEmptyVault,
     handleOpenFolder,
     handleDismiss,
-    userReadyVaultPath,
   }
 }

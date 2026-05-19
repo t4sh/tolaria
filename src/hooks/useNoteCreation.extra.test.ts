@@ -8,7 +8,7 @@ import {
   buildNoteContent,
   resolveNewNote,
   resolveNewType,
-  DEFAULT_TEMPLATES,
+  planNewTypeCreation,
   resolveTemplate,
 } from './useNoteCreation'
 
@@ -231,8 +231,8 @@ describe('resolveTemplate', () => {
     expect(resolveTemplate({ entries: [typeEntry], typeName: 'Recipe' })).toBe('## Ingredients\n\n## Steps\n\n')
   })
 
-  it('falls back to DEFAULT_TEMPLATES for built-in types', () => {
-    expect(resolveTemplate({ entries: [], typeName: 'Project' })).toBe(DEFAULT_TEMPLATES.Project)
+  it('returns null for built-in types without an explicit type template', () => {
+    expect(resolveTemplate({ entries: [], typeName: 'Project' })).toBeNull()
   })
 
   it('returns null when no template and no default', () => {
@@ -242,15 +242,6 @@ describe('resolveTemplate', () => {
   it('type entry template overrides default', () => {
     const typeEntry = makeEntry({ isA: 'Type', title: 'Project', template: '## Custom\n\n' })
     expect(resolveTemplate({ entries: [typeEntry], typeName: 'Project' })).toBe('## Custom\n\n')
-  })
-})
-
-describe('DEFAULT_TEMPLATES', () => {
-  it('has templates for Project, Person, Responsibility, Experiment', () => {
-    expect(DEFAULT_TEMPLATES.Project).toBeDefined()
-    expect(DEFAULT_TEMPLATES.Person).toBeDefined()
-    expect(DEFAULT_TEMPLATES.Responsibility).toBeDefined()
-    expect(DEFAULT_TEMPLATES.Experiment).toBeDefined()
   })
 })
 
@@ -304,18 +295,72 @@ describe('resolveNewNote', () => {
 })
 
 describe('resolveNewType', () => {
-  it('creates a type entry at vault root', () => {
+  it('creates a type entry at the vault root', () => {
     const { entry, content } = resolveNewType({ typeName: 'Recipe', vaultPath: '/my/vault' })
     expect(entry.path).toBe('/my/vault/recipe.md')
     expect(entry.isA).toBe('Type')
     expect(entry.status).toBeNull()
     expect(content).toContain('type: Type')
-    expect(content).not.toContain('# Recipe')
+    expect(content).toContain('# Recipe')
   })
 
   it('uses provided vault path instead of hardcoded path', () => {
     const { entry } = resolveNewType({ typeName: 'Responsibility', vaultPath: '/other/vault' })
     expect(entry.path).toBe('/other/vault/responsibility.md')
     expect(entry.path).not.toContain('/Users/luca/Laputa')
+  })
+
+  it('normalizes the built-in Notes label to the Note type definition', () => {
+    const { entry, content } = resolveNewType({ typeName: 'Notes', vaultPath: '/my/vault' })
+
+    expect(entry.path).toBe('/my/vault/note.md')
+    expect(entry.filename).toBe('note.md')
+    expect(entry.title).toBe('Note')
+    expect(content).toContain('# Note')
+  })
+})
+
+describe('planNewTypeCreation', () => {
+  it('blocks creating a type when a same-slug non-Type note already exists', () => {
+    const plan = planNewTypeCreation({
+      entries: [makeEntry({ path: '/my/vault/tasks.md', filename: 'tasks.md', title: 'Tasks', isA: 'Note' })],
+      typeName: 'Tasks',
+      vaultPath: '/my/vault',
+    })
+
+    expect(plan).toEqual({
+      status: 'blocked',
+      message: 'Cannot create type "Tasks" because tasks.md already exists',
+    })
+  })
+
+  it('blocks type collisions case-insensitively for cross-platform vaults', () => {
+    const plan = planNewTypeCreation({
+      entries: [makeEntry({ path: '/my/vault/TASKS.md', filename: 'TASKS.md', title: 'Tasks', isA: 'Note' })],
+      typeName: 'tasks',
+      vaultPath: '/my/vault',
+    })
+
+    expect(plan.status).toBe('blocked')
+  })
+
+  it('does not treat an existing notes.md note as a collision for the built-in Notes label', () => {
+    const plan = planNewTypeCreation({
+      entries: [makeEntry({ path: '/my/vault/notes.md', filename: 'notes.md', title: 'Meeting Notes', isA: 'Note' })],
+      typeName: 'Notes',
+      vaultPath: '/my/vault',
+    })
+
+    expect(plan).toEqual({
+      status: 'create',
+      resolved: expect.objectContaining({
+        entry: expect.objectContaining({
+          path: '/my/vault/note.md',
+          filename: 'note.md',
+          title: 'Note',
+          isA: 'Type',
+        }),
+      }),
+    })
   })
 })

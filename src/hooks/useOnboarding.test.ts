@@ -30,16 +30,20 @@ vi.mock('../mock-tauri', () => ({
 
 vi.mock('./useVaultSwitcher', () => ({}))
 
-vi.mock('../utils/vault-dialog', () => ({
-  pickFolder: vi.fn(),
-}))
+vi.mock('../utils/vault-dialog', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/vault-dialog')>()
+  return {
+    ...actual,
+    pickFolder: vi.fn(),
+  }
+})
 
-import { pickFolder } from '../utils/vault-dialog'
+import { NativeFolderPickerBlockedError, pickFolder } from '../utils/vault-dialog'
 import { useOnboarding } from './useOnboarding'
 
 function mockCommands(overrides: Record<string, MockOverride> = {}) {
   mockInvokeFn.mockImplementation(async (cmd: string, args?: MockArgs) => {
-    const override = overrides[cmd]
+    const override = Reflect.get(overrides, cmd) as MockOverride | undefined
     if (typeof override === 'function') {
       return override(args)
     }
@@ -54,9 +58,26 @@ function mockCommands(overrides: Record<string, MockOverride> = {}) {
 
 async function renderOnboarding(
   initialVaultPath = MISSING_VAULT_PATH,
+  registerVault?: (
+    vaultPath: string,
+    label: string,
+    options?: { verifyAvailability?: boolean },
+  ) => Promise<void>,
   onTemplateVaultReady?: (vaultPath: string) => void,
 ) {
-  const rendered = renderHook(() => useOnboarding(initialVaultPath, onTemplateVaultReady))
+  const rendered = renderHook(() => useOnboarding(
+    initialVaultPath,
+    {
+      registerVault,
+      onVaultReady: onTemplateVaultReady
+        ? (vaultPath, source) => {
+            if (source === 'template') {
+              onTemplateVaultReady(vaultPath)
+            }
+          }
+        : undefined,
+    },
+  ))
   await waitFor(() => {
     expect(rendered.result.current.state.status).not.toBe('loading')
   })
@@ -195,12 +216,13 @@ describe('useOnboarding', () => {
 
   it('creates the template vault inside the selected parent folder', async () => {
     const onTemplateVaultReady = vi.fn()
+    const registerVault = vi.fn().mockResolvedValue(undefined)
     mockCommands({
       create_getting_started_vault: (args?: MockArgs) => (args as { targetPath: string }).targetPath,
     })
     vi.mocked(pickFolder).mockResolvedValue(DEFAULT_PARENT_PATH)
 
-    const { result } = await renderOnboarding(MISSING_VAULT_PATH, onTemplateVaultReady)
+    const { result } = await renderOnboarding(MISSING_VAULT_PATH, registerVault, onTemplateVaultReady)
 
     await expectStatus(result, 'welcome')
     await act(async () => {
@@ -211,6 +233,11 @@ describe('useOnboarding', () => {
     expect(mockInvokeFn).toHaveBeenCalledWith('create_getting_started_vault', {
       targetPath: DEFAULT_GETTING_STARTED_PATH,
     })
+    expect(registerVault).toHaveBeenCalledWith(
+      DEFAULT_GETTING_STARTED_PATH,
+      'Getting Started',
+      { verifyAvailability: false },
+    )
     expect(onTemplateVaultReady).toHaveBeenCalledWith(DEFAULT_GETTING_STARTED_PATH)
     expect(localStorage.getItem(APP_STORAGE_KEYS.welcomeDismissed)).toBe('1')
   })
@@ -235,7 +262,7 @@ describe('useOnboarding', () => {
       await result.current.handleCreateVault()
     })
 
-    expect(result.current.error).toBe('Could not download Getting Started vault. Check your connection and try again.')
+    expect(result.current.error).toBe('Could not download Getting Started vault: git clone failed: fatal: unable to access')
     expect(result.current.state.status).toBe('welcome')
   })
 
@@ -294,8 +321,47 @@ describe('useOnboarding', () => {
   })
 
   it('opens an existing folder and transitions to ready', async () => {
+    const registerVault = vi.fn().mockResolvedValue(undefined)
     mockCommands()
     vi.mocked(pickFolder).mockResolvedValue('/selected/folder')
+
+    const { result } = await renderOnboarding(MISSING_VAULT_PATH, registerVault)
+
+    await expectStatus(result, 'welcome')
+    await act(async () => {
+      await result.current.handleOpenFolder()
+    })
+
+    expect(result.current.state).toEqual({ status: 'ready', vaultPath: '/selected/folder' })
+    expect(registerVault).toHaveBeenCalledWith('/selected/folder', 'folder')
+    expect(localStorage.getItem(APP_STORAGE_KEYS.welcomeDismissed)).toBe('1')
+  })
+
+  it('shows a visible error when vault registration fails during onboarding', async () => {
+    const registerVault = vi.fn().mockRejectedValue(new Error('Failed to write vault list'))
+    mockCommands()
+    vi.mocked(pickFolder).mockResolvedValue('/selected/folder')
+
+    const { result } = await renderOnboarding(MISSING_VAULT_PATH, registerVault)
+
+    await expectStatus(result, 'welcome')
+    await act(async () => {
+      await result.current.handleOpenFolder()
+    })
+
+    expect(result.current.state).toEqual({ status: 'welcome', defaultPath: DEFAULT_GETTING_STARTED_PATH })
+    expect(result.current.error).toBe('Could not open vault: Failed to write vault list')
+  })
+
+  it('does nothing when the open-folder picker is cancelled', async () => {
+    await expectCancelledPickerLeavesWelcome(async (onboarding) => {
+      await onboarding.handleOpenFolder()
+    })
+  })
+
+  it('shows the restart-required picker message instead of crashing the welcome flow', async () => {
+    mockCommands()
+    vi.mocked(pickFolder).mockRejectedValue(new NativeFolderPickerBlockedError())
 
     const { result } = await renderOnboarding()
 
@@ -304,14 +370,10 @@ describe('useOnboarding', () => {
       await result.current.handleOpenFolder()
     })
 
-    expect(result.current.state).toEqual({ status: 'ready', vaultPath: '/selected/folder' })
-    expect(localStorage.getItem(APP_STORAGE_KEYS.welcomeDismissed)).toBe('1')
-  })
-
-  it('does nothing when the open-folder picker is cancelled', async () => {
-    await expectCancelledPickerLeavesWelcome(async (onboarding) => {
-      await onboarding.handleOpenFolder()
-    })
+    expect(result.current.error).toBe(
+      'Tolaria needs a restart before macOS can open another folder picker. Restart to apply the downloaded update and try again.',
+    )
+    expect(result.current.state.status).toBe('welcome')
   })
 
   it('marks the welcome screen dismissed and keeps the initial vault path', async () => {

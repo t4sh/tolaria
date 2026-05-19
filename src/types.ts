@@ -1,9 +1,19 @@
 import type { AiAgentId } from './lib/aiAgents'
+import type { AiAgentPermissionMode } from './lib/aiAgentPermissionMode'
+import type { AiModelProvider } from './lib/aiTargets'
+import type { ThemeMode } from './lib/themeMode'
+import type { AppLocale } from './lib/i18n'
+import type { DateDisplayFormat } from './utils/dateDisplay'
+
+export type VaultPropertyScalar = string | number | boolean | null
+export type VaultPropertyArray = Array<string | number | boolean>
+export type VaultPropertyValue = VaultPropertyScalar | VaultPropertyArray
 
 export interface VaultEntry {
   path: string
   filename: string
   title: string
+  workspace?: WorkspaceIdentity
   isA: string | null
   aliases: string[]
   belongsTo: string[]
@@ -33,6 +43,8 @@ export interface VaultEntry {
   sort: string | null
   /** Default view mode for the note list of this Type: "all", "editor-list", or "editor-only". */
   view: string | null
+  /** Rich-editor note width mode from `_width` frontmatter. null means use the default. */
+  noteWidth?: NoteWidthMode | null
   /** Whether this Type is visible in the sidebar. Defaults to true when absent. */
   visible: boolean | null
   /** Whether this note has been explicitly organized (removed from Inbox). */
@@ -45,13 +57,26 @@ export interface VaultEntry {
   listPropertiesDisplay: string[]
   /** All wikilink targets found in the note content. Extracted from [[target]] patterns. */
   outgoingLinks: string[]
-  /** Custom scalar frontmatter properties (non-relationship, non-structural). */
-  properties: Record<string, string | number | boolean | null>
+  /** Custom scalar and scalar-array frontmatter properties (non-relationship, non-structural). */
+  properties: Record<string, VaultPropertyValue>
   /** Whether the note body has an H1 heading on the first non-empty line. */
   hasH1: boolean
   /** File kind: "markdown", "text", or "binary". Determines editor behavior.
    *  Defaults to "markdown" when absent (for backwards compatibility). */
   fileKind?: 'markdown' | 'text' | 'binary'
+}
+
+export interface WorkspaceIdentity {
+  id: string
+  label: string
+  alias: string
+  path: string
+  shortLabel: string
+  color: string | null
+  icon: string | null
+  mounted: boolean
+  available: boolean
+  defaultForNewNotes: boolean
 }
 
 export type NoteStatus = 'new' | 'modified' | 'clean' | 'pendingSave' | 'unsaved'
@@ -72,6 +97,7 @@ export interface LastCommitInfo {
 export interface ModifiedFile {
   path: string
   relativePath: string
+  vaultPath?: string
   status: 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed'
   addedLines?: number | null
   deletedLines?: number | null
@@ -80,16 +106,31 @@ export interface ModifiedFile {
 
 export interface Settings {
   auto_pull_interval_minutes: number | null
+  git_enabled?: boolean | null
   autogit_enabled?: boolean | null
   autogit_idle_threshold_seconds?: number | null
   autogit_inactive_threshold_seconds?: number | null
+  auto_advance_inbox_after_organize?: boolean | null
   telemetry_consent: boolean | null
   crash_reporting_enabled: boolean | null
   analytics_enabled: boolean | null
   anonymous_id: string | null
   release_channel: string | null
+  theme_mode?: ThemeMode | null
+  ui_language?: AppLocale | null
+  date_display_format?: DateDisplayFormat | null
+  note_width_mode?: NoteWidthMode | null
+  sidebar_type_pluralization_enabled?: boolean | null
   initial_h1_auto_rename_enabled?: boolean | null
+  ai_features_enabled?: boolean | null
   default_ai_agent?: AiAgentId | null
+  default_ai_target?: string | null
+  ai_model_providers?: AiModelProvider[] | null
+  hide_gitignored_files?: boolean | null
+  all_notes_show_pdfs?: boolean | null
+  all_notes_show_images?: boolean | null
+  all_notes_show_unsupported?: boolean | null
+  multi_workspace_enabled?: boolean | null
 }
 
 export interface GitPullResult {
@@ -147,10 +188,19 @@ export interface AllNotesConfig {
 }
 
 /** Vault-scoped UI configuration stored locally per vault path. */
+export type NoteLayout = 'centered' | 'left'
+
+export type NoteWidthMode = 'normal' | 'wide'
+export type GitSetupPreference = 'prompt' | 'never'
+
+/** Vault-scoped UI configuration stored locally per vault path. */
 export interface VaultConfig {
   zoom: number | null
   view_mode: string | null
   editor_mode: string | null
+  note_layout?: NoteLayout | null
+  git_setup_preference?: GitSetupPreference | null
+  ai_agent_permission_mode?: AiAgentPermissionMode | null
   tag_colors: Record<string, string> | null
   status_colors: Record<string, string> | null
   property_display_modes: Record<string, string> | null
@@ -183,9 +233,9 @@ export type InboxPeriod = 'week' | 'month' | 'quarter' | 'all'
 export type SidebarSelection =
   | { kind: 'filter'; filter: SidebarFilter }
   | { kind: 'sectionGroup'; type: string }
-  | { kind: 'folder'; path: string }
+  | { kind: 'folder'; path: string; rootPath?: string }
   | { kind: 'entity'; entry: VaultEntry }
-  | { kind: 'view'; filename: string }
+  | { kind: 'view'; filename: string; rootPath?: string }
 
 // --- Custom Views ---
 
@@ -205,6 +255,8 @@ export interface ViewDefinition {
   name: string
   icon: string | null
   color: string | null
+  /** Display order for saved Views in sidebar/list surfaces (lower = higher). */
+  order?: number | null
   sort: string | null
   listPropertiesDisplay?: string[]
   filters: FilterGroup
@@ -213,11 +265,14 @@ export interface ViewDefinition {
 export interface ViewFile {
   filename: string
   definition: ViewDefinition
+  rootPath?: string
+  workspace?: WorkspaceIdentity
 }
 
 /** A node in the vault's folder tree (directories only, no files). */
 export interface FolderNode {
   name: string
   path: string
+  rootPath?: string
   children: FolderNode[]
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { isTauri } from '../mock-tauri'
 import {
   APP_COMMAND_EVENT_NAME,
@@ -11,8 +11,14 @@ import {
   dispatchNoteListSearchToggle,
   readNoteListSearchAvailability,
 } from '../utils/noteListSearchEvents'
+import {
+  EDITOR_FIND_AVAILABILITY_EVENT,
+  readEditorFindAvailability,
+} from '../utils/editorFindEvents'
 
 const NOTE_LIST_SEARCH_MENU_ID = 'edit-toggle-note-list-search'
+
+type NativeUnlisten = () => void | Promise<void>
 
 export interface MenuEventHandlers extends AppCommandHandlers {
   activeTabPath: string | null
@@ -29,6 +35,7 @@ interface MenuStatePayload {
   hasRestorableDeletedNote?: boolean
   hasNoRemote?: boolean
   noteListSearchEnabled?: boolean
+  editorFindEnabled?: boolean
 }
 
 function readCustomEventDetail(event: Event): string | null {
@@ -54,6 +61,12 @@ function syncNativeMenuState(state: MenuStatePayload): void {
 
   import('@tauri-apps/api/core')
     .then(({ invoke }) => invoke('update_menu_state', { state }))
+    .catch((err) => console.warn('[menu] Failed to sync native menu state:', err))
+}
+
+function cleanupNativeMenuListener(unlisten: NativeUnlisten): void {
+  void Promise.resolve()
+    .then(unlisten)
     .catch(() => {})
 }
 
@@ -62,7 +75,7 @@ function useNativeMenuEventListener(handlersRef: { current: MenuEventHandlers })
     if (!isTauri()) return
 
     let disposed = false
-    let unlisten: (() => void) | null = null
+    let unlisten: NativeUnlisten | null = null
 
     import('@tauri-apps/api/event')
       .then(async ({ listen }) => {
@@ -71,7 +84,7 @@ function useNativeMenuEventListener(handlersRef: { current: MenuEventHandlers })
         })
 
         if (disposed) {
-          teardown()
+          cleanupNativeMenuListener(teardown)
           return
         }
 
@@ -83,7 +96,7 @@ function useNativeMenuEventListener(handlersRef: { current: MenuEventHandlers })
 
     return () => {
       disposed = true
-      unlisten?.()
+      if (unlisten) cleanupNativeMenuListener(unlisten)
     }
   }, [handlersRef])
 }
@@ -126,18 +139,21 @@ function useNativeMenuStateSync(state: MenuStatePayload) {
   }, [state])
 }
 
-function useNoteListSearchMenuState() {
+function useAvailabilityMenuState(
+  eventName: string,
+  readAvailability: (event: Event) => boolean | null,
+) {
   const [enabled, setEnabled] = useState(false)
 
   useEffect(() => {
     const handleAvailabilityEvent = (event: Event) => {
-      const nextEnabled = readNoteListSearchAvailability(event)
+      const nextEnabled = readAvailability(event)
       if (nextEnabled !== null) setEnabled(nextEnabled)
     }
 
-    window.addEventListener(NOTE_LIST_SEARCH_AVAILABILITY_EVENT, handleAvailabilityEvent)
-    return () => window.removeEventListener(NOTE_LIST_SEARCH_AVAILABILITY_EVENT, handleAvailabilityEvent)
-  }, [])
+    window.addEventListener(eventName, handleAvailabilityEvent)
+    return () => window.removeEventListener(eventName, handleAvailabilityEvent)
+  }, [eventName, readAvailability])
 
   return enabled
 }
@@ -155,12 +171,36 @@ export function dispatchMenuEvent(id: string, h: MenuEventHandlers): void {
 /** Listen for native macOS menu events and dispatch them to the appropriate handlers. */
 export function useMenuEvents(handlers: MenuEventHandlers) {
   const ref = useRef(handlers)
-  const noteListSearchEnabled = useNoteListSearchMenuState()
+  const noteListSearchEnabled = useAvailabilityMenuState(
+    NOTE_LIST_SEARCH_AVAILABILITY_EVENT,
+    readNoteListSearchAvailability,
+  )
+  const editorFindEnabled = useAvailabilityMenuState(
+    EDITOR_FIND_AVAILABILITY_EVENT,
+    readEditorFindAvailability,
+  )
   const hasActiveNote = handlers.activeTabPath !== null
   const hasModifiedFiles = handlers.modifiedCount != null ? handlers.modifiedCount > 0 : undefined
   const hasConflicts = handlers.conflictCount != null ? handlers.conflictCount > 0 : undefined
   const hasRestorableDeletedNote = handlers.hasRestorableDeletedNote
   const hasNoRemote = handlers.hasNoRemote
+  const menuState = useMemo(() => ({
+    hasActiveNote,
+    hasModifiedFiles,
+    hasConflicts,
+    hasRestorableDeletedNote,
+    hasNoRemote,
+    noteListSearchEnabled,
+    editorFindEnabled,
+  }), [
+    hasActiveNote,
+    hasModifiedFiles,
+    hasConflicts,
+    hasRestorableDeletedNote,
+    hasNoRemote,
+    noteListSearchEnabled,
+    editorFindEnabled,
+  ])
 
   useEffect(() => {
     ref.current = handlers
@@ -169,12 +209,5 @@ export function useMenuEvents(handlers: MenuEventHandlers) {
   useNativeMenuEventListener(ref)
   useWindowAppCommandListener(ref)
   useTestMenuCommandBridge(ref)
-  useNativeMenuStateSync({
-    hasActiveNote,
-    hasModifiedFiles,
-    hasConflicts,
-    hasRestorableDeletedNote,
-    hasNoRemote,
-    noteListSearchEnabled,
-  })
+  useNativeMenuStateSync(menuState)
 }

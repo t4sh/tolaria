@@ -1,6 +1,10 @@
 import { renderHook, act } from '@testing-library/react'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { useUpdater } from './useUpdater'
+import {
+  clearRestartRequiredAfterUpdate,
+  isRestartRequiredAfterUpdate,
+} from '../lib/appUpdater'
 
 vi.mock('../mock-tauri', () => ({
   isTauri: vi.fn(() => false),
@@ -108,6 +112,7 @@ describe('useUpdater', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    clearRestartRequiredAfterUpdate()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
@@ -166,7 +171,37 @@ describe('useUpdater', () => {
   it('returns up-to-date when no update is available', async () => {
     const { result, outcome } = await performManualCheck('stable', null)
 
-    expect(outcome).toBe('up-to-date')
+    expect(outcome).toEqual({ kind: 'up-to-date' })
+    expect(result.current.status).toEqual({ state: 'idle' })
+  })
+
+  it('shows checking state while a manual update check is in flight', async () => {
+    vi.mocked(isTauri).mockReturnValue(true)
+    let resolveCheck: (value: AppUpdateMetadata | null) => void = () => {}
+    mockInvoke.mockImplementation((command: string) => {
+      if (command === 'check_for_app_update') {
+        return new Promise<AppUpdateMetadata | null>((resolve) => {
+          resolveCheck = resolve
+        })
+      }
+      return Promise.resolve(null)
+    })
+
+    const { result } = renderUpdater('stable')
+
+    let checkPromise: Promise<unknown> | null = null
+    await act(async () => {
+      checkPromise = result.current.actions.checkForUpdates()
+      await Promise.resolve()
+    })
+
+    expect(result.current.status).toEqual({ state: 'checking' })
+
+    await act(async () => {
+      resolveCheck(null)
+      expect(await checkPromise).toEqual({ kind: 'up-to-date' })
+    })
+
     expect(result.current.status).toEqual({ state: 'idle' })
   })
 
@@ -176,7 +211,11 @@ describe('useUpdater', () => {
       makeUpdate({ body: undefined }),
     )
 
-    expect(outcome).toBe('available')
+    expect(outcome).toEqual({
+      kind: 'available',
+      version: '2026.4.16',
+      displayVersion: '2026.4.16',
+    })
     expect(result.current.status).toEqual({
       state: 'available',
       version: '2026.4.16',
@@ -205,9 +244,12 @@ describe('useUpdater', () => {
       new Error('network error'),
     )
 
-    expect(outcome).toBe('error')
+    expect(outcome).toEqual({
+      kind: 'error',
+      message: 'Could not check for updates: network error',
+    })
     expect(console.warn).toHaveBeenCalledWith('[updater] Failed to check for updates')
-    expect(result.current.status).toEqual({ state: 'idle' })
+    expect(result.current.status).toEqual({ state: 'error' })
   })
 
   it('dismiss resets the banner state', async () => {
@@ -237,7 +279,7 @@ describe('useUpdater', () => {
     })
 
     expect(mockOpenExternalUrl).toHaveBeenCalledWith(
-      'https://refactoringhq.github.io/tolaria/'
+      'https://tolaria.md/releases/'
     )
   })
 
@@ -270,6 +312,7 @@ describe('useUpdater', () => {
       version: '2026.4.16',
       displayVersion: '2026.4.16',
     })
+    expect(isRestartRequiredAfterUpdate()).toBe(true)
   })
 
   it('transitions to error when download fails', async () => {

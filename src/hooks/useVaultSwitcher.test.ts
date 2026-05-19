@@ -15,6 +15,7 @@ const mockInvokeFn = vi.fn((cmd: string, args?: Record<string, unknown>): Promis
     return Promise.resolve(null)
   }
   if (cmd === 'get_default_vault_path') return Promise.resolve(mockDefaultVaultPath)
+  if (cmd === 'sync_mcp_bridge_vault') return Promise.resolve(args?.vaultPath ? 'started' : 'stopped')
   if (cmd === 'check_vault_exists') return Promise.resolve(true)
   return Promise.resolve(null)
 })
@@ -28,9 +29,15 @@ vi.mock('../mock-tauri', () => ({
   mockInvoke: (cmd: string, args?: Record<string, unknown>) => mockInvokeFn(cmd, args),
 }))
 
-vi.mock('../utils/vault-dialog', () => ({
-  pickFolder: vi.fn(),
-}))
+vi.mock('../utils/vault-dialog', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/vault-dialog')>()
+  return {
+    ...actual,
+    pickFolder: vi.fn(),
+  }
+})
+
+import { NativeFolderPickerBlockedError } from '../utils/vault-dialog'
 
 type MockInvokeOverrides = {
   checkVaultExists?: boolean | ((args: { path?: string }) => boolean)
@@ -50,6 +57,7 @@ describe('useVaultSwitcher', () => {
         return Promise.resolve(null)
       }
       if (cmd === 'get_default_vault_path') return Promise.resolve(mockDefaultVaultPath)
+      if (cmd === 'sync_mcp_bridge_vault') return Promise.resolve(args?.vaultPath ? 'started' : 'stopped')
       if (cmd === 'check_vault_exists') {
         const checkVaultExists = overrides.checkVaultExists
         return Promise.resolve(typeof checkVaultExists === 'function'
@@ -91,8 +99,36 @@ describe('useVaultSwitcher', () => {
   it('loads the default vault when the resolved path exists', async () => {
     const { result } = await renderLoadedVaultSwitcher()
 
-    expect(result.current.allVaults).toEqual([{ label: 'Getting Started', path: expectedDefaultVaultPath }])
+    expect(result.current.allVaults).toEqual([{ label: 'Getting Started', path: expectedDefaultVaultPath, managedDefault: true }])
     expect(result.current.vaultPath).toBe(expectedDefaultVaultPath)
+  })
+
+  it('persists workspace identity changes for the implicit default vault', async () => {
+    const { result } = await renderLoadedVaultSwitcher()
+
+    act(() => {
+      result.current.updateWorkspaceIdentity(expectedDefaultVaultPath, { mounted: false, shortLabel: 'GS' })
+    })
+
+    await waitFor(() => {
+      expect(result.current.allVaults).toEqual([
+        expect.objectContaining({
+          path: expectedDefaultVaultPath,
+          managedDefault: true,
+          mounted: false,
+          shortLabel: 'GS',
+        }),
+      ])
+    })
+    await waitFor(() => {
+      expect(mockVaultListStore.vaults).toEqual([
+        expect.objectContaining({
+          path: expectedDefaultVaultPath,
+          mounted: false,
+          shortLabel: 'GS',
+        }),
+      ])
+    })
   })
 
   it('loads persisted vaults on mount', async () => {
@@ -151,6 +187,52 @@ describe('useVaultSwitcher', () => {
     })
   })
 
+  it('registers an onboarding vault selection before switching to it', async () => {
+    const { result } = await renderLoadedVaultSwitcher()
+
+    await act(async () => {
+      await result.current.registerVaultSelection('/selected/vault', 'Selected Vault')
+    })
+
+    expect(result.current.vaultPath).toBe('/selected/vault')
+    expect(result.current.selectedVaultPath).toBe('/selected/vault')
+    expect(mockVaultListStore).toEqual({
+      vaults: [{
+        label: 'Selected Vault',
+        path: '/selected/vault',
+        alias: null,
+        color: null,
+        icon: null,
+        mounted: true,
+      }],
+      active_vault: '/selected/vault',
+      default_workspace_path: '/selected/vault',
+      hidden_defaults: [],
+    })
+  })
+
+  it('registers the canonical Getting Started vault without persisting a duplicate entry', async () => {
+    setMockInvokeBehavior({
+      checkVaultExists: ({ path }) => path === expectedDefaultVaultPath,
+    })
+
+    const { result } = await renderLoadedVaultSwitcher()
+
+    await act(async () => {
+      await result.current.registerVaultSelection(expectedDefaultVaultPath, 'Getting Started')
+    })
+
+    expect(result.current.vaultPath).toBe(expectedDefaultVaultPath)
+    expect(result.current.selectedVaultPath).toBe(expectedDefaultVaultPath)
+    expect(result.current.allVaults).toEqual([{ label: 'Getting Started', path: expectedDefaultVaultPath, managedDefault: true }])
+    expect(mockVaultListStore).toEqual({
+      vaults: [],
+      active_vault: expectedDefaultVaultPath,
+      default_workspace_path: expectedDefaultVaultPath,
+      hidden_defaults: [],
+    })
+  })
+
   it('persists active vault when switching', async () => {
     mockVaultListStore = {
       vaults: [{ label: 'Work', path: '/work/vault' }],
@@ -185,6 +267,46 @@ describe('useVaultSwitcher', () => {
     expect(mockVaultListStore.active_vault).toBeNull()
   })
 
+  it('stops the MCP bridge when there is no selected active vault', async () => {
+    await renderLoadedVaultSwitcher()
+
+    await waitFor(() => {
+      expect(mockInvokeFn).toHaveBeenCalledWith('sync_mcp_bridge_vault', { vaultPath: null })
+    })
+  })
+
+  it('syncs the MCP bridge to a persisted active vault', async () => {
+    mockVaultListStore = {
+      vaults: [{ label: 'Work', path: '/work/vault' }],
+      active_vault: '/work/vault',
+      hidden_defaults: [],
+    }
+
+    await renderLoadedVaultSwitcher()
+
+    await waitFor(() => {
+      expect(mockInvokeFn).toHaveBeenCalledWith('sync_mcp_bridge_vault', { vaultPath: '/work/vault' })
+    })
+  })
+
+  it('syncs the MCP bridge after switching vaults', async () => {
+    mockVaultListStore = {
+      vaults: [{ label: 'Work', path: '/work/vault' }],
+      active_vault: null,
+      hidden_defaults: [],
+    }
+
+    const { result } = await renderLoadedVaultSwitcher()
+
+    act(() => {
+      result.current.switchVault('/work/vault')
+    })
+
+    await waitFor(() => {
+      expect(mockInvokeFn).toHaveBeenCalledWith('sync_mcp_bridge_vault', { vaultPath: '/work/vault' })
+    })
+  })
+
   it('keeps the implicit default vault out of the list when its path is missing', async () => {
     setMockInvokeBehavior({ checkVaultExists: false })
 
@@ -210,13 +332,29 @@ describe('useVaultSwitcher', () => {
 
     const { result } = await renderLoadedVaultSwitcher()
 
-    expect(result.current.allVaults).toEqual([{ label: 'Work', path: '/work/vault', available: true }])
+    expect(result.current.allVaults).toEqual([{
+      label: 'Work',
+      path: '/work/vault',
+      alias: undefined,
+      color: null,
+      icon: null,
+      mounted: true,
+      available: true,
+    }])
     expect(result.current.vaultPath).toBe('/work/vault')
 
     await waitFor(() => {
       expect(mockVaultListStore).toEqual({
-        vaults: [{ label: 'Work', path: '/work/vault' }],
+        vaults: [{
+          label: 'Work',
+          path: '/work/vault',
+          alias: null,
+          color: null,
+          icon: null,
+          mounted: true,
+        }],
         active_vault: '/work/vault',
+        default_workspace_path: '/work/vault',
         hidden_defaults: [],
       })
     })
@@ -239,6 +377,7 @@ describe('useVaultSwitcher', () => {
       expect(mockVaultListStore).toEqual({
         vaults: [],
         active_vault: null,
+        default_workspace_path: null,
         hidden_defaults: [],
       })
     })
@@ -292,6 +431,21 @@ describe('useVaultSwitcher', () => {
 
     expect(result.current.allVaults.some(v => v.path === '/Users/luca/MyVault')).toBe(true)
     expect(onToast).toHaveBeenCalledWith('Vault "MyVault" opened')
+  })
+
+  it('shows a clear toast when folder picking is blocked until restart', async () => {
+    const { pickFolder } = await import('../utils/vault-dialog')
+    vi.mocked(pickFolder).mockRejectedValue(new NativeFolderPickerBlockedError())
+
+    const { result } = await renderLoadedVaultSwitcher()
+
+    await act(async () => {
+      await result.current.handleOpenLocalFolder()
+    })
+
+    expect(onToast).toHaveBeenCalledWith(
+      'Tolaria needs a restart before macOS can open another folder picker. Restart to apply the downloaded update and try again.',
+    )
   })
 
   it('creates an empty vault and switches to it', async () => {
